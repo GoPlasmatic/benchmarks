@@ -71,13 +71,16 @@ az network nsg rule create \
 
 # Create Benchmark VM (runs benchmark scripts)
 echo "Creating Benchmark VM (Standard_B2s)..."
+# Generate unique VM name to avoid conflicts
+VM_NAME="benchmark-vm-$(date +%s)"
+
 az vm create \
     --resource-group "$RESOURCE_GROUP" \
-    --name "benchmark-vm" \
+    --name "$VM_NAME" \
     --image "Ubuntu2204" \
     --size "Standard_B2s" \
     --admin-username "azureuser" \
-    --generate-ssh-keys \
+    --ssh-key-values ~/.ssh/id_rsa.pub \
     --vnet-name "benchmark-vnet" \
     --subnet "benchmark-subnet" \
     --nsg "benchmark-nsg" \
@@ -89,7 +92,7 @@ az vm create \
 # Get VM IP
 BENCHMARK_VM_IP=$(az vm show -d \
     -g "$RESOURCE_GROUP" \
-    -n "benchmark-vm" \
+    -n "$VM_NAME" \
     --query publicIps -o tsv)
 
 # Wait for VM to be ready

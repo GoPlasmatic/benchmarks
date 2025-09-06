@@ -209,12 +209,21 @@ EOF
     # Step 7: Extract resource metrics (optional)
     echo "Step 7/8: Extracting Azure metrics for $VM_SIZE..."
     
+    # Get VM name dynamically (since we use unique names)
+    VM_NAME=$(az vm list \
+        -g "${AZURE_RESOURCE_GROUP}-${VM_SIZE}" \
+        --query "[0].name" -o tsv)
+    
     # Get basic VM metrics from Azure
-    VM_METRICS=$(az vm show \
-        --resource-group "${AZURE_RESOURCE_GROUP}-${VM_SIZE}" \
-        --name "reframe-product-vm-${VM_SIZE}" \
-        --query "{vmSize: hardwareProfile.vmSize, location: location}" \
-        -o json)
+    if [ -n "$VM_NAME" ]; then
+        VM_METRICS=$(az vm show \
+            --resource-group "${AZURE_RESOURCE_GROUP}-${VM_SIZE}" \
+            --name "$VM_NAME" \
+            --query "{vmSize: hardwareProfile.vmSize, location: location}" \
+            -o json)
+    else
+        VM_METRICS='{"vmSize": "'$VM_SIZE'", "location": "'$AZURE_LOCATION'"}'
+    fi
     
     echo "$VM_METRICS" > "${RESULTS_DIR}/${VM_SIZE}/vm_metrics.json"
     

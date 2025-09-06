@@ -72,6 +72,12 @@ jobs:
           mkdir -p results/$timestamp
           echo "results_dir=results/$timestamp" >> $GITHUB_OUTPUT
 
+      - name: Setup SSH Keys
+        run: |
+          # Generate SSH key pair for VM access
+          mkdir -p ~/.ssh
+          ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -q
+          
       - name: Create Benchmark VM
         id: benchmark_vm
         run: |
@@ -87,10 +93,14 @@ jobs:
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }}-benchmark \
             --location ${{ env.AZURE_LOCATION }}
           
-          # Get benchmark VM IP
+          # Get benchmark VM details (we'll query by resource group since name is dynamic)
+          benchmark_vm_name=$(az vm list \
+            -g ${{ env.AZURE_RESOURCE_GROUP }}-benchmark \
+            --query "[0].name" -o tsv)
+          
           benchmark_vm_ip=$(az vm show -d \
             -g ${{ env.AZURE_RESOURCE_GROUP }}-benchmark \
-            -n benchmark-vm \
+            -n "$benchmark_vm_name" \
             --query publicIps -o tsv)
           
           echo "benchmark_vm_ip=$benchmark_vm_ip" >> $GITHUB_OUTPUT

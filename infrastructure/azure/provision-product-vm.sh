@@ -103,13 +103,16 @@ az network nsg rule create \
 
 # Create Product VM
 echo "Creating Product VM (${AZURE_SKU})..."
+# Generate unique VM name to avoid conflicts
+VM_NAME="reframe-vm-$(echo $VM_SIZE | sed 's/-//g')-$(date +%s)"
+
 az vm create \
     --resource-group "$RESOURCE_GROUP" \
-    --name "reframe-product-vm-${VM_SIZE}" \
+    --name "$VM_NAME" \
     --image "Ubuntu2204" \
     --size "$AZURE_SKU" \
     --admin-username "azureuser" \
-    --generate-ssh-keys \
+    --ssh-key-values ~/.ssh/id_rsa.pub \
     --vnet-name "product-vnet-${VM_SIZE}" \
     --subnet "product-subnet" \
     --nsg "product-nsg-${VM_SIZE}" \
@@ -121,7 +124,7 @@ az vm create \
 # Get VM IP
 PRODUCT_VM_IP=$(az vm show -d \
     -g "$RESOURCE_GROUP" \
-    -n "reframe-product-vm-${VM_SIZE}" \
+    -n "$VM_NAME" \
     --query publicIps -o tsv)
 
 # Wait for VM to be ready
