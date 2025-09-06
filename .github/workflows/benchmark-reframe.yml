@@ -115,6 +115,7 @@ jobs:
           export REFRAME_IMAGE_TAG="${{ inputs.reframe_image_tag }}"
           export AZURE_RESOURCE_GROUP="${{ env.AZURE_RESOURCE_GROUP }}"
           export AZURE_LOCATION="${{ env.AZURE_LOCATION }}"
+          export ACR_SERVER="${{ secrets.ACR_SERVER }}"
           export ACR_USERNAME="${{ secrets.ACR_USERNAME }}"
           export ACR_PASSWORD="${{ secrets.ACR_PASSWORD }}"
           
@@ -137,12 +138,16 @@ jobs:
       - name: Upload to Azure Storage
         if: always()
         run: |
-          az storage blob upload-batch \
-            --account-name ${{ env.STORAGE_ACCOUNT }} \
-            --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
-            --destination ${{ env.STORAGE_CONTAINER }}/${{ steps.setup.outputs.timestamp }} \
-            --source ${{ steps.setup.outputs.results_dir }} \
-            --pattern "*"
+          if [ -n "${{ secrets.AZURE_STORAGE_KEY }}" ]; then
+            az storage blob upload-batch \
+              --account-name ${{ env.STORAGE_ACCOUNT }} \
+              --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
+              --destination ${{ env.STORAGE_CONTAINER }}/${{ steps.setup.outputs.timestamp }} \
+              --source ${{ steps.setup.outputs.results_dir }} \
+              --pattern "*"
+          else
+            echo "Warning: AZURE_STORAGE_KEY not configured, skipping upload to Azure Storage"
+          fi
 
       - name: Cleanup Benchmark VM
         if: always()
@@ -150,7 +155,8 @@ jobs:
           echo "Cleaning up benchmark VM..."
           az group delete \
             --name ${{ env.AZURE_RESOURCE_GROUP }}-benchmark \
-            --yes --no-wait
+            --yes \
+            --force-deletion-types "Microsoft.Compute/virtualMachines"
 
       - name: Display Results Summary
         run: |

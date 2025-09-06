@@ -65,9 +65,11 @@ fi
 
 # Delete resource group and all contained resources
 echo "Deleting resource group $RESOURCE_GROUP..."
+# Using --force-deletion-types to ensure all resources including disks are deleted
 az group delete \
     --name "$RESOURCE_GROUP" \
     --yes \
+    --force-deletion-types "Microsoft.Compute/virtualMachines" \
     --no-wait
 
 echo "=========================================="

@@ -27,16 +27,10 @@ This will output JSON like:
 
 Copy this entire JSON and save it as the `AZURE_CREDENTIALS` secret.
 
-### 2. AZURE_STORAGE_KEY
-Storage account access key for uploading benchmark reports.
+### 2. ACR_SERVER
+Azure Container Registry server URL.
 
-To get:
-```bash
-az storage account keys list \
-  --account-name benchmarkstorage \
-  --resource-group benchmarks-rg \
-  --query '[0].value' -o tsv
-```
+Example: `myregistry.azurecr.io`
 
 ### 3. ACR_USERNAME
 Azure Container Registry username.
@@ -44,7 +38,7 @@ Azure Container Registry username.
 To get:
 ```bash
 az acr credential show \
-  --name plasmatic \
+  --name myregistry \
   --query username -o tsv
 ```
 
@@ -54,8 +48,19 @@ Azure Container Registry password.
 To get:
 ```bash
 az acr credential show \
-  --name plasmatic \
+  --name myregistry \
   --query passwords[0].value -o tsv
+```
+
+### 5. AZURE_STORAGE_KEY (Optional)
+Storage account access key for uploading benchmark reports. If not provided, results will only be available as GitHub artifacts.
+
+To get:
+```bash
+az storage account keys list \
+  --account-name benchmarkstorage \
+  --resource-group benchmarks-rg \
+  --query '[0].value' -o tsv
 ```
 
 ## How to Add Secrets to GitHub
@@ -80,8 +85,8 @@ After adding all secrets, you can verify the setup by:
 
 Ensure your Azure subscription has:
 - Sufficient quota for VM sizes (Standard_B2s, Standard_D4s_v3, Standard_D8s_v3, Standard_D16s_v3)
-- Storage account created: `benchmarkstorage`
-- Container registry created: `plasmatic.azurecr.io`
+- Container registry with Reframe image deployed
+- (Optional) Storage account for report storage
 - Network quota for VNets and public IPs
 
 ## Cost Considerations
@@ -94,3 +99,23 @@ Running the full benchmark suite (all VM sizes) will cost approximately:
 - **Total per run: ~$2-3** (assuming 1-2 hours total runtime)
 
 Resources are automatically cleaned up after each run to minimize costs.
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Docker pull fails**: Verify ACR_SERVER, ACR_USERNAME, and ACR_PASSWORD are correct
+2. **VM provisioning fails**: Check Azure quota limits
+3. **Storage upload fails**: Ensure AZURE_STORAGE_KEY is set (or remove storage upload step)
+4. **Cleanup fails**: Manually delete resource groups if needed
+
+### Manual Cleanup
+
+If automatic cleanup fails, delete resource groups manually:
+```bash
+az group delete --name benchmarks-rg-2-core --yes
+az group delete --name benchmarks-rg-4-core --yes
+az group delete --name benchmarks-rg-8-core --yes
+az group delete --name benchmarks-rg-16-core --yes
+az group delete --name benchmarks-rg-benchmark --yes
+```

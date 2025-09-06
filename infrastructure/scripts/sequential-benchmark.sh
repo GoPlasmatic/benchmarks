@@ -52,18 +52,16 @@ for VM_SIZE in "${VM_SIZE_ARRAY[@]}"; do
     # Login to ACR and deploy Reframe
     ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null azureuser@"$PRODUCT_VM_IP" << EOF
 # Login to Azure Container Registry
-echo "$ACR_PASSWORD" | docker login plasmatic.azurecr.io -u "$ACR_USERNAME" --password-stdin
+echo "$ACR_PASSWORD" | docker login ${ACR_SERVER} -u "$ACR_USERNAME" --password-stdin
 
 # Pull the Reframe image
-docker pull plasmatic.azurecr.io/reframe:${REFRAME_IMAGE_TAG}
+docker pull ${ACR_SERVER}/reframe:${REFRAME_IMAGE_TAG}
 
 # Create docker-compose.yml (will be updated per test)
-cat << 'COMPOSE' > /home/azureuser/docker-compose.yml
-version: '3.8'
-
+cat << COMPOSE > /home/azureuser/docker-compose.yml
 services:
   reframe:
-    image: plasmatic.azurecr.io/reframe:${REFRAME_IMAGE_TAG}
+    image: ${ACR_SERVER}/reframe:${REFRAME_IMAGE_TAG}
     container_name: reframe-benchmark
     ports:
       - "3000:3000"
@@ -73,8 +71,11 @@ services:
       - REFRAME_THREAD_COUNT=4
       - REFRAME_MAX_CONCURRENT_TASKS=16
     restart: unless-stopped
-    mem_limit: 80%
-    cpus: 0.95
+    deploy:
+      resources:
+        limits:
+          memory: 6G
+          cpus: '0.95'
     logging:
       driver: json-file
       options:
@@ -138,9 +139,9 @@ docker run -d \
     -e REFRAME_THREAD_COUNT=$thread_count \
     -e REFRAME_MAX_CONCURRENT_TASKS=$max_tasks \
     --restart unless-stopped \
-    --memory="80%" \
+    --memory="6g" \
     --cpus="0.95" \
-    plasmatic.azurecr.io/reframe:${REFRAME_IMAGE_TAG}
+    ${ACR_SERVER}/reframe:${REFRAME_IMAGE_TAG}
 
 # Wait for service to be ready
 sleep 10
@@ -219,10 +220,11 @@ EOF
     
     # Step 8: Cleanup resources for this VM
     echo "Step 8/8: Cleaning up $VM_SIZE resources..."
+    # Force deletion to ensure disks are cleaned up
     az group delete \
         --name "${AZURE_RESOURCE_GROUP}-${VM_SIZE}" \
         --yes \
-        --no-wait
+        --force-deletion-types "Microsoft.Compute/virtualMachines"
     
     echo ""
     echo "✅ Completed benchmarking for $VM_SIZE"
