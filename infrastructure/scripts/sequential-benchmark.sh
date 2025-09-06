@@ -21,6 +21,32 @@ IFS=',' read -ra VM_SIZE_ARRAY <<< "$VM_SIZES"
 TOTAL_VMS=${#VM_SIZE_ARRAY[@]}
 CURRENT_VM=0
 
+# Verify benchmark VM is ready before starting
+echo "Verifying benchmark VM setup..."
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null azureuser@"$BENCHMARK_VM_IP" << 'EOF'
+# Check if enhanced_benchmark.py exists
+if [ ! -f /home/azureuser/enhanced_benchmark.py ]; then
+    echo "ERROR: Benchmark script not found on benchmark VM!"
+    echo "Contents of /home/azureuser:"
+    ls -la /home/azureuser/
+    exit 1
+fi
+
+# Check Python packages
+echo "Checking Python packages..."
+python3 -c "import aiohttp, requests, psutil, pandas, matplotlib, jinja2" 2>/dev/null || {
+    echo "Installing missing Python packages..."
+    pip3 install --user aiohttp requests psutil pandas matplotlib jinja2
+}
+
+echo "Benchmark VM is ready!"
+EOF
+
+if [ $? -ne 0 ]; then
+    echo "ERROR: Benchmark VM setup verification failed!"
+    exit 1
+fi
+
 # Main loop - process each VM size sequentially
 for VM_SIZE in "${VM_SIZE_ARRAY[@]}"; do
     CURRENT_VM=$((CURRENT_VM + 1))
@@ -31,11 +57,16 @@ for VM_SIZE in "${VM_SIZE_ARRAY[@]}"; do
     echo "╚══════════════════════════════════════════════════════════════╝"
     echo ""
     
-    # Step 1: Create resource group for this VM
-    echo "Step 1/8: Creating resource group..."
-    az group create \
-        --name "${AZURE_RESOURCE_GROUP}-${VM_SIZE}" \
-        --location "$AZURE_LOCATION"
+    # Step 1: Verify resource group exists
+    echo "Step 1/8: Verifying resource group..."
+    if ! az group exists --name "${AZURE_RESOURCE_GROUP}"; then
+        echo "Creating resource group: ${AZURE_RESOURCE_GROUP}"
+        az group create \
+            --name "${AZURE_RESOURCE_GROUP}" \
+            --location "$AZURE_LOCATION"
+    else
+        echo "Using existing resource group: ${AZURE_RESOURCE_GROUP}"
+    fi
     
     # Step 2: Provision Product VM
     echo "Step 2/8: Provisioning $VM_SIZE Product VM..."
@@ -43,7 +74,7 @@ for VM_SIZE in "${VM_SIZE_ARRAY[@]}"; do
     # Run provisioning and capture output
     PROVISION_OUTPUT=$(bash infrastructure/azure/provision-product-vm.sh \
         --vm-size "$VM_SIZE" \
-        --resource-group "${AZURE_RESOURCE_GROUP}-${VM_SIZE}" \
+        --resource-group "${AZURE_RESOURCE_GROUP}" \
         --location "$AZURE_LOCATION" 2>&1)
     
     # Extract IP from the last line
@@ -54,8 +85,8 @@ for VM_SIZE in "${VM_SIZE_ARRAY[@]}"; do
         echo "ERROR: Failed to get valid Product VM IP address"
         echo "Provisioning output:"
         echo "$PROVISION_OUTPUT"
-        echo "Cleaning up and skipping this VM..."
-        az group delete --name "${AZURE_RESOURCE_GROUP}-${VM_SIZE}" --yes --no-wait
+        echo "Skipping this VM configuration..."
+        # Note: Not deleting resource group as it's shared
         continue
     fi
     
@@ -75,8 +106,8 @@ for VM_SIZE in "${VM_SIZE_ARRAY[@]}"; do
         echo "  ACR_URL: ${ACR_URL:-'NOT SET'}"
         echo "  ACR_USERNAME: ${ACR_USERNAME:-'NOT SET'}"
         echo "  ACR_PASSWORD: ${ACR_PASSWORD:+'SET'}"
-        echo "Cleaning up and skipping this VM..."
-        az group delete --name "${AZURE_RESOURCE_GROUP}-${VM_SIZE}" --yes --no-wait
+        echo "Skipping this VM configuration..."
+        # Note: Not deleting resource group as it's shared
         continue
     fi
     
@@ -191,8 +222,23 @@ sleep 10
 EOF
             
             # Run benchmark on benchmark VM
+            echo "Running benchmark test ${TEST_NUM} on benchmark VM..."
+            echo "  Target: http://${PRODUCT_VM_IP}:3000"
+            echo "  Requests: $NUM_REQUESTS"
+            echo "  Concurrent levels: $CONCURRENT_LEVELS"
+            
             ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null azureuser@"$BENCHMARK_VM_IP" << EOF
+set -e
 cd /home/azureuser
+
+# Check if script exists
+if [ ! -f enhanced_benchmark.py ]; then
+    echo "ERROR: enhanced_benchmark.py not found!"
+    ls -la
+    exit 1
+fi
+
+echo "Starting benchmark execution..."
 
 # Run benchmark with specific configuration
 python3 enhanced_benchmark.py \
@@ -201,7 +247,14 @@ python3 enhanced_benchmark.py \
     --num-requests $NUM_REQUESTS \
     --concurrent-levels "$CONCURRENT_LEVELS" \
     --output-dir "results_${VM_SIZE}_test${TEST_NUM}"
+
+echo "Benchmark execution completed for test ${TEST_NUM}"
 EOF
+            
+            if [ $? -ne 0 ]; then
+                echo "ERROR: Benchmark test ${TEST_NUM} failed!"
+                continue
+            fi
         done
     done
     
@@ -254,13 +307,13 @@ EOF
     
     # Get VM name dynamically (since we use unique names)
     VM_NAME=$(az vm list \
-        -g "${AZURE_RESOURCE_GROUP}-${VM_SIZE}" \
-        --query "[0].name" -o tsv)
+        -g "${AZURE_RESOURCE_GROUP}" \
+        --query "[?contains(name, '$VM_SIZE')].name | [0]" -o tsv)
     
     # Get basic VM metrics from Azure
     if [ -n "$VM_NAME" ]; then
         VM_METRICS=$(az vm show \
-            --resource-group "${AZURE_RESOURCE_GROUP}-${VM_SIZE}" \
+            --resource-group "${AZURE_RESOURCE_GROUP}" \
             --name "$VM_NAME" \
             --query "{vmSize: hardwareProfile.vmSize, location: location}" \
             -o json)
@@ -270,13 +323,17 @@ EOF
     
     echo "$VM_METRICS" > "${RESULTS_DIR}/${VM_SIZE}/vm_metrics.json"
     
-    # Step 8: Cleanup resources for this VM
-    echo "Step 8/8: Cleaning up $VM_SIZE resources..."
-    # Force deletion to ensure disks are cleaned up
-    az group delete \
-        --name "${AZURE_RESOURCE_GROUP}-${VM_SIZE}" \
-        --yes \
-        --force-deletion-types "Microsoft.Compute/virtualMachines"
+    # Step 8: Cleanup VM for this size (but keep resource group)
+    echo "Step 8/8: Cleaning up $VM_SIZE VM..."
+    # Delete the specific VM to free resources
+    if [ -n "$VM_NAME" ]; then
+        echo "Deleting VM: $VM_NAME"
+        az vm delete \
+            --resource-group "${AZURE_RESOURCE_GROUP}" \
+            --name "$VM_NAME" \
+            --yes \
+            --no-wait
+    fi
     
     echo ""
     echo "✅ Completed benchmarking for $VM_SIZE"

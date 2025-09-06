@@ -28,7 +28,7 @@ on:
         default: 'latest'
 
 env:
-  AZURE_RESOURCE_GROUP: benchmarks-rg
+  AZURE_RESOURCE_GROUP: benchmarks-rg  # Single resource group for all resources
   AZURE_LOCATION: eastus
   STORAGE_ACCOUNT: benchmarkstorage
   STORAGE_CONTAINER: reports
@@ -56,6 +56,34 @@ jobs:
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Pre-run Cleanup
+        run: |
+          echo "Checking for existing benchmark resource group..."
+          if az group exists --name ${{ env.AZURE_RESOURCE_GROUP }}; then
+            echo "Found existing resource group: ${{ env.AZURE_RESOURCE_GROUP }}"
+            echo "Deleting all resources..."
+            az group delete --name ${{ env.AZURE_RESOURCE_GROUP }} --yes --no-wait
+            
+            echo "Waiting for deletion to complete..."
+            # Wait up to 5 minutes for deletion
+            for i in {1..30}; do
+              if ! az group exists --name ${{ env.AZURE_RESOURCE_GROUP }}; then
+                echo "Resource group deleted successfully"
+                break
+              fi
+              echo "Waiting... ($i/30)"
+              sleep 10
+            done
+          else
+            echo "No existing resource group found."
+          fi
+          
+          # Create fresh resource group
+          echo "Creating resource group: ${{ env.AZURE_RESOURCE_GROUP }}"
+          az group create \
+            --name ${{ env.AZURE_RESOURCE_GROUP }} \
+            --location ${{ env.AZURE_LOCATION }}
 
       - name: Setup Environment
         id: setup
@@ -85,14 +113,9 @@ jobs:
         run: |
           echo "Creating benchmark VM (runs benchmark scripts)..."
           
-          # Create resource group for benchmark VM
-          az group create \
-            --name ${{ env.AZURE_RESOURCE_GROUP }}-benchmark \
-            --location ${{ env.AZURE_LOCATION }}
-          
-          # Provision benchmark VM (small instance) and capture IP
+          # Provision benchmark VM in the main resource group
           benchmark_vm_ip=$(bash infrastructure/azure/provision-benchmark-vm.sh \
-            --resource-group ${{ env.AZURE_RESOURCE_GROUP }}-benchmark \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --location ${{ env.AZURE_LOCATION }} | tail -n 1)
           
           # Validate IP
@@ -157,14 +180,22 @@ jobs:
             echo "Warning: AZURE_STORAGE_KEY not configured, skipping upload to Azure Storage"
           fi
 
-      - name: Cleanup Benchmark VM
+      - name: Final Cleanup
         if: always()
         run: |
-          echo "Cleaning up benchmark VM..."
-          az group delete \
-            --name ${{ env.AZURE_RESOURCE_GROUP }}-benchmark \
-            --yes \
-            --force-deletion-types "Microsoft.Compute/virtualMachines"
+          echo "Performing final cleanup of benchmark resources..."
+          
+          # Simply delete the entire resource group - this removes everything
+          if az group exists --name ${{ env.AZURE_RESOURCE_GROUP }}; then
+            echo "Deleting resource group: ${{ env.AZURE_RESOURCE_GROUP }}"
+            az group delete \
+              --name ${{ env.AZURE_RESOURCE_GROUP }} \
+              --yes \
+              --no-wait
+            echo "Resource group deletion initiated. All resources will be removed."
+          else
+            echo "Resource group already deleted or doesn't exist."
+          fi
 
       - name: Display Results Summary
         run: |
