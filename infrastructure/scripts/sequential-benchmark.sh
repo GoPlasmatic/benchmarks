@@ -226,8 +226,15 @@ EOF
             echo "  Target: http://${PRODUCT_VM_IP}:3000"
             echo "  Requests: $NUM_REQUESTS"
             echo "  Concurrent levels: $CONCURRENT_LEVELS"
+            echo "  Starting at: $(date)"
             
-            ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null azureuser@"$BENCHMARK_VM_IP" << EOF
+            # Use timeout command to prevent hanging (5 minutes max per test)
+            timeout 300 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+                -o ServerAliveInterval=10 -o ServerAliveCountMax=3 \
+                azureuser@"$BENCHMARK_VM_IP" << EOF || {
+                echo "ERROR: Benchmark test ${TEST_NUM} timed out after 5 minutes!"
+                continue
+            }
 set -e
 cd /home/azureuser
 
@@ -240,8 +247,8 @@ fi
 
 echo "Starting benchmark execution..."
 
-# Run benchmark with specific configuration
-python3 enhanced_benchmark.py \
+# Run benchmark with specific configuration (unbuffered output)
+python3 -u enhanced_benchmark.py \
     --base-url "http://${PRODUCT_VM_IP}:3000" \
     --vm-size "$VM_SIZE" \
     --num-requests $NUM_REQUESTS \

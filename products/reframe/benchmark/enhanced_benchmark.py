@@ -147,8 +147,9 @@ async def run_benchmark_test(
         for _ in range(10):
             await make_request(session, url, data)
         
-        print(f"Running {num_requests} requests...")
+        print(f"Running {num_requests} requests with {concurrent} concurrent...")
         start_time = time.perf_counter()
+        last_report = start_time
         
         latencies = []
         successes = 0
@@ -158,22 +159,43 @@ async def run_benchmark_test(
         for i in range(0, num_requests, concurrent):
             batch_size = min(concurrent, num_requests - i)
             batch = [make_request(session, url, data) for _ in range(batch_size)]
-            results = await asyncio.gather(*batch)
             
-            for latency, success in results:
-                latencies.append(latency)
-                if success:
-                    successes += 1
-                else:
+            # Add timeout for batch
+            try:
+                results = await asyncio.wait_for(
+                    asyncio.gather(*batch, return_exceptions=True),
+                    timeout=30.0  # 30 second timeout per batch
+                )
+            except asyncio.TimeoutError:
+                print(f"\n  WARNING: Batch timeout at {i}/{num_requests}")
+                results = [(0, False)] * batch_size
+            
+            for result in results:
+                if isinstance(result, Exception):
+                    latencies.append(0)
                     failures += 1
+                else:
+                    latency, success = result
+                    latencies.append(latency)
+                    if success:
+                        successes += 1
+                    else:
+                        failures += 1
             
-            # Progress indicator
-            if (i + batch_size) % 1000 == 0:
+            # Progress indicator - report every 500 requests or 5 seconds
+            current_time = time.perf_counter()
+            if (i + batch_size) % 500 == 0 or (current_time - last_report) >= 5:
                 progress = (i + batch_size) / num_requests * 100
-                print(f"  Progress: {i + batch_size}/{num_requests} ({progress:.1f}%)", end='\r')
+                elapsed = current_time - start_time
+                rate = (i + batch_size) / elapsed if elapsed > 0 else 0
+                eta = (num_requests - i - batch_size) / rate if rate > 0 else 0
+                print(f"  Progress: {i + batch_size}/{num_requests} ({progress:.1f}%) | "
+                      f"Rate: {rate:.0f} req/s | ETA: {eta:.0f}s | "
+                      f"Success: {successes}/{i + batch_size}")
+                last_report = current_time
         
         total_time = time.perf_counter() - start_time
-        print()  # New line after progress
+        print(f"\n  Completed: {num_requests} requests in {total_time:.2f}s")
     
     # Stop CPU monitoring
     cpu_stats = monitor.stop()

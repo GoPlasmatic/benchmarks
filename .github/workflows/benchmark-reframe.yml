@@ -17,11 +17,11 @@ on:
       num_requests:
         description: 'Number of requests per test'
         required: false
-        default: '100000'
+        default: '5000'
       concurrent_levels:
         description: 'Concurrent request levels (comma-separated)'
         required: false
-        default: '64,256,512'
+        default: '64,128,256'
       reframe_image_tag:
         description: 'Reframe Docker image tag'
         required: false
