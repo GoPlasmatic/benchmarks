@@ -3,6 +3,7 @@
 # Provision a single product VM with specified configuration
 
 set -e
+set -o pipefail
 
 # Default values
 LOCATION="eastus"
@@ -37,16 +38,41 @@ if [ -z "$VM_SIZE" ] || [ -z "$RESOURCE_GROUP" ]; then
     exit 1
 fi
 
+# Check if jq is installed
+if ! command -v jq &> /dev/null; then
+    echo "Error: jq is not installed. Installing..." >&2
+    if command -v apt-get &> /dev/null; then
+        sudo apt-get update && sudo apt-get install -y jq
+    else
+        echo "Error: Cannot install jq automatically" >&2
+        exit 1
+    fi
+fi
+
 # Load VM configuration
 CONFIG_FILE="infrastructure/azure/vm-configs/${VM_SIZE}.json"
 if [ ! -f "$CONFIG_FILE" ]; then
-    echo "Error: Configuration file not found: $CONFIG_FILE"
+    echo "Error: Configuration file not found: $CONFIG_FILE" >&2
+    echo "Current directory: $(pwd)" >&2
+    echo "Looking for: $CONFIG_FILE" >&2
+    ls -la infrastructure/azure/vm-configs/ 2>&1 >&2 || echo "Directory not found" >&2
     exit 1
 fi
 
 # Extract configuration
-AZURE_SKU=$(jq -r '.azure_sku' "$CONFIG_FILE")
+AZURE_SKU=$(jq -r '.azure_sku' "$CONFIG_FILE" 2>&1) || {
+    echo "Error: Failed to parse JSON with jq" >&2
+    echo "jq error: $AZURE_SKU" >&2
+    exit 1
+}
 DISK_SIZE=$(jq -r '.disk_size_gb' "$CONFIG_FILE")
+
+if [ -z "$AZURE_SKU" ] || [ "$AZURE_SKU" = "null" ]; then
+    echo "Error: Failed to extract azure_sku from config file" >&2
+    echo "Config file contents:" >&2
+    cat "$CONFIG_FILE" >&2
+    exit 1
+fi
 
 echo "=========================================="
 echo "Provisioning Product VM"
@@ -57,14 +83,17 @@ echo "Location: $LOCATION"
 echo "=========================================="
 
 # Create Virtual Network
-echo "Creating Virtual Network..."
+echo "Creating Virtual Network..." >&2
 az network vnet create \
     --resource-group "$RESOURCE_GROUP" \
     --name "product-vnet-${VM_SIZE}" \
     --address-prefix "10.0.0.0/16" \
     --subnet-name "product-subnet" \
     --subnet-prefix "10.0.1.0/24" \
-    --location "$LOCATION"
+    --location "$LOCATION" 2>&1 | tee /dev/stderr || {
+    echo "Error: Failed to create virtual network" >&2
+    exit 1
+}
 
 # Create Network Security Group
 echo "Creating Network Security Group..."

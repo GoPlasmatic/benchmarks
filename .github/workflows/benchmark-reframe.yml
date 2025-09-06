@@ -49,6 +49,8 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r infrastructure/scripts/requirements.txt
+          # Install jq for JSON parsing in scripts
+          sudo apt-get update && sudo apt-get install -y jq
 
       - name: Azure Login
         uses: azure/login@v2

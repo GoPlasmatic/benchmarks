@@ -3,6 +3,7 @@
 # Provision a small benchmark VM for running benchmark scripts
 
 set -e
+set -o pipefail
 
 # Default values
 LOCATION="eastus"
