@@ -65,14 +65,14 @@ for VM_SIZE in "${VM_SIZE_ARRAY[@]}"; do
     echo "Step 3/8: Deploying Reframe to Product VM..."
     
     # Debug: Check ACR variables
-    echo "Debug: ACR_SERVER=${ACR_SERVER}"
+    echo "Debug: ACR_URL=${ACR_URL}"
     echo "Debug: ACR_USERNAME=${ACR_USERNAME}"
     echo "Debug: REFRAME_IMAGE_TAG=${REFRAME_IMAGE_TAG}"
     
     # Validate ACR configuration
-    if [ -z "$ACR_SERVER" ] || [ -z "$ACR_USERNAME" ] || [ -z "$ACR_PASSWORD" ]; then
+    if [ -z "$ACR_URL" ] || [ -z "$ACR_USERNAME" ] || [ -z "$ACR_PASSWORD" ]; then
         echo "ERROR: ACR configuration is missing!"
-        echo "  ACR_SERVER: ${ACR_SERVER:-'NOT SET'}"
+        echo "  ACR_URL: ${ACR_URL:-'NOT SET'}"
         echo "  ACR_USERNAME: ${ACR_USERNAME:-'NOT SET'}"
         echo "  ACR_PASSWORD: ${ACR_PASSWORD:+'SET'}"
         echo "Cleaning up and skipping this VM..."
@@ -83,8 +83,8 @@ for VM_SIZE in "${VM_SIZE_ARRAY[@]}"; do
     # Login to ACR and deploy Reframe
     ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null azureuser@"$PRODUCT_VM_IP" << EOF
 # Login to Azure Container Registry
-echo "Logging into ACR: ${ACR_SERVER}"
-echo "$ACR_PASSWORD" | docker login ${ACR_SERVER} -u "$ACR_USERNAME" --password-stdin
+echo "Logging into ACR: ${ACR_URL}"
+echo "$ACR_PASSWORD" | docker login ${ACR_URL} -u "$ACR_USERNAME" --password-stdin
 
 if [ \$? -ne 0 ]; then
     echo "ERROR: Failed to login to ACR"
@@ -92,8 +92,8 @@ if [ \$? -ne 0 ]; then
 fi
 
 # Pull the Reframe image
-echo "Pulling image: ${ACR_SERVER}/reframe:${REFRAME_IMAGE_TAG}"
-docker pull ${ACR_SERVER}/reframe:${REFRAME_IMAGE_TAG}
+echo "Pulling image: ${ACR_URL}/reframe:${REFRAME_IMAGE_TAG}"
+docker pull ${ACR_URL}/reframe:${REFRAME_IMAGE_TAG}
 
 if [ \$? -ne 0 ]; then
     echo "ERROR: Failed to pull Reframe image"
@@ -104,7 +104,7 @@ fi
 cat << COMPOSE > /home/azureuser/docker-compose.yml
 services:
   reframe:
-    image: ${ACR_SERVER}/reframe:${REFRAME_IMAGE_TAG}
+    image: ${ACR_URL}/reframe:${REFRAME_IMAGE_TAG}
     container_name: reframe-benchmark
     ports:
       - "3000:3000"
@@ -184,7 +184,7 @@ docker run -d \
     --restart unless-stopped \
     --memory="6g" \
     --cpus="0.95" \
-    ${ACR_SERVER}/reframe:${REFRAME_IMAGE_TAG}
+    ${ACR_URL}/reframe:${REFRAME_IMAGE_TAG}
 
 # Wait for service to be ready
 sleep 10

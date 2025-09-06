@@ -27,7 +27,7 @@ This will output JSON like:
 
 Copy this entire JSON and save it as the `AZURE_CREDENTIALS` secret.
 
-### 2. ACR_SERVER
+### 2. ACR_URL
 Azure Container Registry server URL.
 
 Example: `myregistry.azurecr.io`
@@ -104,7 +104,7 @@ Resources are automatically cleaned up after each run to minimize costs.
 
 ### Common Issues
 
-1. **Docker pull fails**: Verify ACR_SERVER, ACR_USERNAME, and ACR_PASSWORD are correct
+1. **Docker pull fails**: Verify ACR_URL, ACR_USERNAME, and ACR_PASSWORD are correct
 2. **VM provisioning fails**: Check Azure quota limits
 3. **Storage upload fails**: Ensure AZURE_STORAGE_KEY is set (or remove storage upload step)
 4. **Cleanup fails**: Manually delete resource groups if needed

@@ -121,7 +121,7 @@ jobs:
           export REFRAME_IMAGE_TAG="${{ inputs.reframe_image_tag }}"
           export AZURE_RESOURCE_GROUP="${{ env.AZURE_RESOURCE_GROUP }}"
           export AZURE_LOCATION="${{ env.AZURE_LOCATION }}"
-          export ACR_SERVER="${{ secrets.ACR_SERVER }}"
+          export ACR_URL="${{ secrets.ACR_URL }}"
           export ACR_USERNAME="${{ secrets.ACR_USERNAME }}"
           export ACR_PASSWORD="${{ secrets.ACR_PASSWORD }}"
           

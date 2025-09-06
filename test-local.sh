@@ -41,7 +41,7 @@ fi
 echo -e "${YELLOW}Checking required secrets:${NC}"
 ERRORS=0
 
-check_secret "ACR_SERVER" "$ACR_SERVER" || ((ERRORS++))
+check_secret "ACR_URL" "$ACR_URL" || ((ERRORS++))
 check_secret "ACR_USERNAME" "$ACR_USERNAME" || ((ERRORS++))
 check_secret "ACR_PASSWORD" "$ACR_PASSWORD" || ((ERRORS++))
 
@@ -52,20 +52,20 @@ check_secret "AZURE_STORAGE_KEY" "$AZURE_STORAGE_KEY" || true
 echo ""
 
 # Test Docker login if credentials are available
-if [ -n "$ACR_SERVER" ] && [ -n "$ACR_USERNAME" ] && [ -n "$ACR_PASSWORD" ]; then
+if [ -n "$ACR_URL" ] && [ -n "$ACR_USERNAME" ] && [ -n "$ACR_PASSWORD" ]; then
     echo -e "${YELLOW}Testing ACR login...${NC}"
-    echo "$ACR_PASSWORD" | docker login "$ACR_SERVER" -u "$ACR_USERNAME" --password-stdin 2>/dev/null
+    echo "$ACR_PASSWORD" | docker login "$ACR_URL" -u "$ACR_USERNAME" --password-stdin 2>/dev/null
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}✓ ACR login successful${NC}"
         
         # Test image existence
         echo -e "${YELLOW}Checking if Reframe image exists...${NC}"
-        docker pull "${ACR_SERVER}/reframe:latest" --quiet 2>/dev/null
+        docker pull "${ACR_URL}/reframe:latest" --quiet 2>/dev/null
         if [ $? -eq 0 ]; then
             echo -e "${GREEN}✓ Reframe image found${NC}"
         else
             echo -e "${RED}✗ Reframe image not found or not accessible${NC}"
-            echo "  Make sure ${ACR_SERVER}/reframe:latest exists"
+            echo "  Make sure ${ACR_URL}/reframe:latest exists"
             ((ERRORS++))
         fi
     else
@@ -127,7 +127,7 @@ else
     echo "Please fix the issues above before running the benchmark."
     echo ""
     echo "Create a .env file with:"
-    echo "  ACR_SERVER=myregistry.azurecr.io"
+    echo "  ACR_URL=myregistry.azurecr.io"
     echo "  ACR_USERNAME=username"
     echo "  ACR_PASSWORD=password"
     echo "  AZURE_STORAGE_KEY=key (optional)"
