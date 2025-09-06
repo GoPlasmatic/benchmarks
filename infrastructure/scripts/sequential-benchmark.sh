@@ -64,13 +64,41 @@ for VM_SIZE in "${VM_SIZE_ARRAY[@]}"; do
     # Step 3: Deploy Reframe application
     echo "Step 3/8: Deploying Reframe to Product VM..."
     
+    # Debug: Check ACR variables
+    echo "Debug: ACR_SERVER=${ACR_SERVER}"
+    echo "Debug: ACR_USERNAME=${ACR_USERNAME}"
+    echo "Debug: REFRAME_IMAGE_TAG=${REFRAME_IMAGE_TAG}"
+    
+    # Validate ACR configuration
+    if [ -z "$ACR_SERVER" ] || [ -z "$ACR_USERNAME" ] || [ -z "$ACR_PASSWORD" ]; then
+        echo "ERROR: ACR configuration is missing!"
+        echo "  ACR_SERVER: ${ACR_SERVER:-'NOT SET'}"
+        echo "  ACR_USERNAME: ${ACR_USERNAME:-'NOT SET'}"
+        echo "  ACR_PASSWORD: ${ACR_PASSWORD:+'SET'}"
+        echo "Cleaning up and skipping this VM..."
+        az group delete --name "${AZURE_RESOURCE_GROUP}-${VM_SIZE}" --yes --no-wait
+        continue
+    fi
+    
     # Login to ACR and deploy Reframe
     ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null azureuser@"$PRODUCT_VM_IP" << EOF
 # Login to Azure Container Registry
+echo "Logging into ACR: ${ACR_SERVER}"
 echo "$ACR_PASSWORD" | docker login ${ACR_SERVER} -u "$ACR_USERNAME" --password-stdin
 
+if [ \$? -ne 0 ]; then
+    echo "ERROR: Failed to login to ACR"
+    exit 1
+fi
+
 # Pull the Reframe image
+echo "Pulling image: ${ACR_SERVER}/reframe:${REFRAME_IMAGE_TAG}"
 docker pull ${ACR_SERVER}/reframe:${REFRAME_IMAGE_TAG}
+
+if [ \$? -ne 0 ]; then
+    echo "ERROR: Failed to pull Reframe image"
+    exit 1
+fi
 
 # Create docker-compose.yml (will be updated per test)
 cat << COMPOSE > /home/azureuser/docker-compose.yml
