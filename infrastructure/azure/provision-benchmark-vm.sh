@@ -71,8 +71,10 @@ az network nsg rule create \
 
 # Create Benchmark VM (runs benchmark scripts)
 echo "Creating Benchmark VM (Standard_B2s)..."
-# Generate unique VM name to avoid conflicts
-VM_NAME="benchmark-vm-$(date +%s)"
+# Generate unique names to avoid conflicts
+TIMESTAMP=$(date +%s)
+VM_NAME="benchmark-vm-${TIMESTAMP}"
+IP_NAME="benchmark-ip-${TIMESTAMP}"
 
 az vm create \
     --resource-group "$RESOURCE_GROUP" \
@@ -84,7 +86,7 @@ az vm create \
     --vnet-name "benchmark-vnet" \
     --subnet "benchmark-subnet" \
     --nsg "benchmark-nsg" \
-    --public-ip-address "benchmark-vm-ip" \
+    --public-ip-address "$IP_NAME" \
     --public-ip-sku Standard \
     --os-disk-size-gb 32 \
     --location "$LOCATION"
@@ -114,7 +116,10 @@ mkdir -p /home/azureuser/infrastructure/azure
 mkdir -p /home/azureuser/results
 EOF
 
-echo "=========================================="
-echo "Benchmark VM Provisioning Complete!"
-echo "Benchmark VM IP: $BENCHMARK_VM_IP"
-echo "=========================================="
+echo "=========================================="  >&2
+echo "Benchmark VM Provisioning Complete!"  >&2
+echo "Benchmark VM IP: $BENCHMARK_VM_IP"  >&2
+echo "=========================================="  >&2
+
+# Return ONLY the IP address on stdout (last line)
+echo "$BENCHMARK_VM_IP"

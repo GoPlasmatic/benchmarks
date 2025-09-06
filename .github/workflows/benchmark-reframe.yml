@@ -88,20 +88,16 @@ jobs:
             --name ${{ env.AZURE_RESOURCE_GROUP }}-benchmark \
             --location ${{ env.AZURE_LOCATION }}
           
-          # Provision benchmark VM (small instance)
-          bash infrastructure/azure/provision-benchmark-vm.sh \
+          # Provision benchmark VM (small instance) and capture IP
+          benchmark_vm_ip=$(bash infrastructure/azure/provision-benchmark-vm.sh \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }}-benchmark \
-            --location ${{ env.AZURE_LOCATION }}
+            --location ${{ env.AZURE_LOCATION }} | tail -n 1)
           
-          # Get benchmark VM details (we'll query by resource group since name is dynamic)
-          benchmark_vm_name=$(az vm list \
-            -g ${{ env.AZURE_RESOURCE_GROUP }}-benchmark \
-            --query "[0].name" -o tsv)
-          
-          benchmark_vm_ip=$(az vm show -d \
-            -g ${{ env.AZURE_RESOURCE_GROUP }}-benchmark \
-            -n "$benchmark_vm_name" \
-            --query publicIps -o tsv)
+          # Validate IP
+          if [[ ! "$benchmark_vm_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: Failed to get valid Benchmark VM IP"
+            exit 1
+          fi
           
           echo "benchmark_vm_ip=$benchmark_vm_ip" >> $GITHUB_OUTPUT
           

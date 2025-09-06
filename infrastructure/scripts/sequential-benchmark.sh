@@ -39,10 +39,25 @@ for VM_SIZE in "${VM_SIZE_ARRAY[@]}"; do
     
     # Step 2: Provision Product VM
     echo "Step 2/8: Provisioning $VM_SIZE Product VM..."
-    PRODUCT_VM_IP=$(bash infrastructure/azure/provision-product-vm.sh \
+    
+    # Run provisioning and capture output
+    PROVISION_OUTPUT=$(bash infrastructure/azure/provision-product-vm.sh \
         --vm-size "$VM_SIZE" \
         --resource-group "${AZURE_RESOURCE_GROUP}-${VM_SIZE}" \
-        --location "$AZURE_LOCATION" | tail -n 1)
+        --location "$AZURE_LOCATION" 2>&1)
+    
+    # Extract IP from the last line
+    PRODUCT_VM_IP=$(echo "$PROVISION_OUTPUT" | tail -n 1)
+    
+    # Validate IP address
+    if [[ ! "$PRODUCT_VM_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "ERROR: Failed to get valid Product VM IP address"
+        echo "Provisioning output:"
+        echo "$PROVISION_OUTPUT"
+        echo "Cleaning up and skipping this VM..."
+        az group delete --name "${AZURE_RESOURCE_GROUP}-${VM_SIZE}" --yes --no-wait
+        continue
+    fi
     
     echo "Product VM IP: $PRODUCT_VM_IP"
     

@@ -103,8 +103,10 @@ az network nsg rule create \
 
 # Create Product VM
 echo "Creating Product VM (${AZURE_SKU})..."
-# Generate unique VM name to avoid conflicts
-VM_NAME="reframe-vm-$(echo $VM_SIZE | sed 's/-//g')-$(date +%s)"
+# Generate unique names to avoid conflicts
+TIMESTAMP=$(date +%s)
+VM_NAME="reframe-vm-$(echo $VM_SIZE | sed 's/-//g')-${TIMESTAMP}"
+IP_NAME="product-ip-$(echo $VM_SIZE | sed 's/-//g')-${TIMESTAMP}"
 
 az vm create \
     --resource-group "$RESOURCE_GROUP" \
@@ -116,7 +118,7 @@ az vm create \
     --vnet-name "product-vnet-${VM_SIZE}" \
     --subnet "product-subnet" \
     --nsg "product-nsg-${VM_SIZE}" \
-    --public-ip-address "product-vm-ip-${VM_SIZE}" \
+    --public-ip-address "$IP_NAME" \
     --public-ip-sku Standard \
     --os-disk-size-gb "$DISK_SIZE" \
     --location "$LOCATION"
@@ -167,7 +169,7 @@ EOF
 echo "=========================================="
 echo "Product VM Provisioning Complete!"
 echo "Product VM IP: $PRODUCT_VM_IP"
-echo "=========================================="
+echo "=========================================="  >&2
 
-# Return the IP address
+# Return ONLY the IP address on stdout (last line)
 echo "$PRODUCT_VM_IP"
