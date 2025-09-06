@@ -88,16 +88,23 @@ for VM_SIZE in "${VM_SIZE_ARRAY[@]}"; do
         --resource-group "${AZURE_RESOURCE_GROUP}" \
         --location "$AZURE_LOCATION" 2>&1 | tee "$PROVISION_OUTPUT_FILE"; then
         
-        # Extract IP from the last line
-        PRODUCT_VM_IP=$(tail -n 1 "$PROVISION_OUTPUT_FILE")
+        # Extract IPs from the last line (format: PUBLIC_IP:PRIVATE_IP)
+        IP_LINE=$(tail -n 1 "$PROVISION_OUTPUT_FILE")
+        PRODUCT_VM_IP=$(echo "$IP_LINE" | cut -d: -f1)
+        PRODUCT_VM_PRIVATE_IP=$(echo "$IP_LINE" | cut -d: -f2)
         
-        # Validate IP address
+        # Validate IP addresses
         if [[ ! "$PRODUCT_VM_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "ERROR: Failed to get valid Product VM IP address"
-            echo "Last line was: $PRODUCT_VM_IP"
+            echo "ERROR: Failed to get valid Product VM public IP address"
+            echo "Last line was: $IP_LINE"
             echo "Skipping this VM configuration..."
             rm -f "$PROVISION_OUTPUT_FILE"
             continue
+        fi
+        
+        if [[ ! "$PRODUCT_VM_PRIVATE_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "WARNING: No private IP found, using public IP for benchmarks"
+            PRODUCT_VM_PRIVATE_IP="$PRODUCT_VM_IP"
         fi
     else
         echo "ERROR: VM provisioning timed out or failed after 10 minutes"
@@ -108,7 +115,8 @@ for VM_SIZE in "${VM_SIZE_ARRAY[@]}"; do
     
     rm -f "$PROVISION_OUTPUT_FILE"
     
-    echo "Product VM IP: $PRODUCT_VM_IP"
+    echo "Product VM Public IP: $PRODUCT_VM_IP"
+    echo "Product VM Private IP: $PRODUCT_VM_PRIVATE_IP"
     
     # Step 3: Deploy Reframe application
     echo "Step 3/8: Deploying Reframe to Product VM..."
@@ -179,7 +187,7 @@ COMPOSE
 docker compose up -d
 EOF
     
-    # Step 4: Verify Reframe is running
+    # Step 4: Verify Reframe is running (use public IP for external check)
     echo "Step 4/8: Verifying Reframe deployment..."
     for i in {1..30}; do
         if curl -s "http://${PRODUCT_VM_IP}:3000/health" > /dev/null 2>&1; then
@@ -194,8 +202,7 @@ EOF
     # Verify one more time
     if ! curl -s "http://${PRODUCT_VM_IP}:3000/health" > /dev/null 2>&1; then
         echo "ERROR: Reframe failed to start on $VM_SIZE VM!"
-        echo "Skipping this VM and cleaning up..."
-        az group delete --name "${AZURE_RESOURCE_GROUP}-${VM_SIZE}" --yes --no-wait
+        echo "Skipping this VM..."
         continue
     fi
     
@@ -241,7 +248,7 @@ EOF
             
             # Run benchmark on benchmark VM
             echo "Running benchmark test ${TEST_NUM} on benchmark VM..."
-            echo "  Target: http://${PRODUCT_VM_IP}:3000"
+            echo "  Target: http://${PRODUCT_VM_PRIVATE_IP}:3000 (private network)"
             echo "  Requests: $NUM_REQUESTS"
             echo "  Concurrent levels: $CONCURRENT_LEVELS"
             echo "  Starting at: $(date)"
@@ -264,7 +271,7 @@ echo "Starting benchmark execution..."
 
 # Run benchmark with specific configuration (unbuffered output)
 python3 -u enhanced_benchmark.py \
-    --base-url "http://${PRODUCT_VM_IP}:3000" \
+    --base-url "http://${PRODUCT_VM_PRIVATE_IP}:3000" \
     --vm-size "$VM_SIZE" \
     --num-requests $NUM_REQUESTS \
     --concurrent-levels "$CONCURRENT_LEVELS" \

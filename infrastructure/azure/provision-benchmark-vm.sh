@@ -39,15 +39,19 @@ echo "Resource Group: $RESOURCE_GROUP"
 echo "Location: $LOCATION"
 echo "=========================================="
 
-# Create Virtual Network
-echo "Creating Virtual Network..."
-az network vnet create \
-    --resource-group "$RESOURCE_GROUP" \
-    --name "benchmark-vnet" \
-    --address-prefix "10.0.0.0/16" \
-    --subnet-name "benchmark-subnet" \
-    --subnet-prefix "10.0.1.0/24" \
-    --location "$LOCATION"
+# Create or use existing Virtual Network (shared with product VMs)
+echo "Creating/verifying shared Virtual Network..."
+if ! az network vnet show --resource-group "$RESOURCE_GROUP" --name "benchmarks-vnet" &>/dev/null; then
+    az network vnet create \
+        --resource-group "$RESOURCE_GROUP" \
+        --name "benchmarks-vnet" \
+        --address-prefix "10.0.0.0/16" \
+        --subnet-name "default-subnet" \
+        --subnet-prefix "10.0.1.0/24" \
+        --location "$LOCATION"
+else
+    echo "Using existing virtual network"
+fi
 
 # Create Network Security Group
 echo "Creating Network Security Group..."
@@ -84,8 +88,8 @@ az vm create \
     --size "Standard_B2s" \
     --admin-username "azureuser" \
     --ssh-key-values ~/.ssh/id_rsa.pub \
-    --vnet-name "benchmark-vnet" \
-    --subnet "benchmark-subnet" \
+    --vnet-name "benchmarks-vnet" \
+    --subnet "default-subnet" \
     --nsg "benchmark-nsg" \
     --public-ip-address "$IP_NAME" \
     --public-ip-sku Standard \

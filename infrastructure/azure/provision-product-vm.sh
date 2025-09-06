@@ -82,18 +82,22 @@ echo "Resource Group: $RESOURCE_GROUP"
 echo "Location: $LOCATION"
 echo "=========================================="
 
-# Create Virtual Network
-echo "Creating Virtual Network..." >&2
-az network vnet create \
-    --resource-group "$RESOURCE_GROUP" \
-    --name "product-vnet-${VM_SIZE}" \
-    --address-prefix "10.0.0.0/16" \
-    --subnet-name "product-subnet" \
-    --subnet-prefix "10.0.1.0/24" \
-    --location "$LOCATION" 2>&1 | tee /dev/stderr || {
-    echo "Error: Failed to create virtual network" >&2
-    exit 1
-}
+# Use shared Virtual Network with benchmark VM
+echo "Using shared Virtual Network..." >&2
+# Ensure the shared vnet exists (should be created by benchmark VM)
+if ! az network vnet show --resource-group "$RESOURCE_GROUP" --name "benchmarks-vnet" &>/dev/null; then
+    echo "Creating shared virtual network..." >&2
+    az network vnet create \
+        --resource-group "$RESOURCE_GROUP" \
+        --name "benchmarks-vnet" \
+        --address-prefix "10.0.0.0/16" \
+        --subnet-name "default-subnet" \
+        --subnet-prefix "10.0.1.0/24" \
+        --location "$LOCATION" 2>&1 | tee /dev/stderr || {
+        echo "Error: Failed to create virtual network" >&2
+        exit 1
+    }
+fi
 
 # Create Network Security Group
 echo "Creating Network Security Group..."
@@ -144,19 +148,24 @@ az vm create \
     --size "$AZURE_SKU" \
     --admin-username "azureuser" \
     --ssh-key-values ~/.ssh/id_rsa.pub \
-    --vnet-name "product-vnet-${VM_SIZE}" \
-    --subnet "product-subnet" \
+    --vnet-name "benchmarks-vnet" \
+    --subnet "default-subnet" \
     --nsg "product-nsg-${VM_SIZE}" \
     --public-ip-address "$IP_NAME" \
     --public-ip-sku Standard \
     --os-disk-size-gb "$DISK_SIZE" \
     --location "$LOCATION"
 
-# Get VM IP
+# Get VM IPs
 PRODUCT_VM_IP=$(az vm show -d \
     -g "$RESOURCE_GROUP" \
     -n "$VM_NAME" \
     --query publicIps -o tsv)
+
+PRODUCT_VM_PRIVATE_IP=$(az vm show -d \
+    -g "$RESOURCE_GROUP" \
+    -n "$VM_NAME" \
+    --query privateIps -o tsv)
 
 # Wait for VM to be ready
 echo "Waiting for VM to be ready..." >&2
@@ -215,8 +224,9 @@ fi
 
 echo "=========================================="  >&2
 echo "Product VM Provisioning Complete!"  >&2
-echo "Product VM IP: $PRODUCT_VM_IP"  >&2
+echo "Product VM Public IP: $PRODUCT_VM_IP"  >&2
+echo "Product VM Private IP: $PRODUCT_VM_PRIVATE_IP"  >&2
 echo "=========================================="  >&2
 
-# Return ONLY the IP address on stdout (last line)
-echo "$PRODUCT_VM_IP"
+# Return both IPs on stdout (format: PUBLIC_IP:PRIVATE_IP)
+echo "${PRODUCT_VM_IP}:${PRODUCT_VM_PRIVATE_IP}"
