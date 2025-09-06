@@ -12,6 +12,8 @@ echo "VM Sizes: $VM_SIZES"
 echo "Benchmark VM: $BENCHMARK_VM_IP"
 echo "Requests: $NUM_REQUESTS"
 echo "Concurrent Levels: $CONCURRENT_LEVELS"
+echo "Thread Counts: ${THREAD_COUNTS:-auto}"
+echo "Max Concurrent Tasks: ${MAX_CONCURRENT_TASKS:-auto}"
 echo "=========================================="
 
 # Convert comma-separated VM sizes to array
@@ -209,14 +211,49 @@ EOF
     # Step 5: Run benchmark tests
     echo "Step 5/8: Running benchmark tests on $VM_SIZE..."
     
-    # Load VM configuration to get thread counts and max tasks
-    CONFIG_FILE="infrastructure/azure/vm-configs/${VM_SIZE}.json"
-    THREAD_COUNTS=$(jq -r '.thread_counts[]' "$CONFIG_FILE" | tr '\n' ' ')
-    MAX_TASKS=$(jq -r '.max_concurrent_tasks[]' "$CONFIG_FILE" | tr '\n' ' ')
+    # Determine thread counts and max tasks to test
+    if [ "$THREAD_COUNTS" = "auto" ] || [ -z "$THREAD_COUNTS" ]; then
+        # Auto-detect based on VM configuration
+        CONFIG_FILE="infrastructure/azure/vm-configs/${VM_SIZE}.json"
+        if [ -f "$CONFIG_FILE" ]; then
+            TEST_THREAD_COUNTS=$(jq -r '.thread_counts[]' "$CONFIG_FILE" 2>/dev/null | tr '\n' ' ')
+            TEST_MAX_TASKS=$(jq -r '.max_concurrent_tasks[]' "$CONFIG_FILE" 2>/dev/null | tr '\n' ' ')
+        fi
+        
+        # Fallback if config file doesn't exist
+        if [ -z "$TEST_THREAD_COUNTS" ]; then
+            # Default based on VM size
+            case $VM_SIZE in
+                2-core) TEST_THREAD_COUNTS="1 2" ;;
+                4-core) TEST_THREAD_COUNTS="2 4" ;;
+                8-core) TEST_THREAD_COUNTS="4 8" ;;
+                16-core) TEST_THREAD_COUNTS="8 16" ;;
+                *) TEST_THREAD_COUNTS="2 4" ;;
+            esac
+        fi
+        
+        if [ -z "$TEST_MAX_TASKS" ]; then
+            # Default based on VM size
+            case $VM_SIZE in
+                2-core) TEST_MAX_TASKS="4 8" ;;
+                4-core) TEST_MAX_TASKS="8 16" ;;
+                8-core) TEST_MAX_TASKS="16 32" ;;
+                16-core) TEST_MAX_TASKS="32 64" ;;
+                *) TEST_MAX_TASKS="8 16" ;;
+            esac
+        fi
+    else
+        # Use user-provided values
+        TEST_THREAD_COUNTS=$(echo "$THREAD_COUNTS" | tr ',' ' ')
+        TEST_MAX_TASKS=$(echo "${MAX_CONCURRENT_TASKS:-$THREAD_COUNTS}" | tr ',' ' ')
+    fi
+    
+    echo "Testing with thread counts: $TEST_THREAD_COUNTS"
+    echo "Testing with max concurrent tasks: $TEST_MAX_TASKS"
     
     TEST_NUM=0
-    for thread_count in $THREAD_COUNTS; do
-        for max_tasks in $MAX_TASKS; do
+    for thread_count in $TEST_THREAD_COUNTS; do
+        for max_tasks in $TEST_MAX_TASKS; do
             TEST_NUM=$((TEST_NUM + 1))
             echo ""
             echo "--- Test Configuration $TEST_NUM for $VM_SIZE ---"

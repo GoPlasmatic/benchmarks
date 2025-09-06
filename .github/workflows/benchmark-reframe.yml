@@ -26,6 +26,14 @@ on:
         description: 'Reframe Docker image tag'
         required: false
         default: 'latest'
+      thread_counts:
+        description: 'Thread counts to test (comma-separated, e.g., "1,2,4")'
+        required: false
+        default: 'auto'
+      max_concurrent_tasks:
+        description: 'Max concurrent tasks to test (comma-separated, e.g., "4,8,16")'
+        required: false
+        default: 'auto'
 
 env:
   AZURE_RESOURCE_GROUP: benchmarks-rg  # Single resource group for all resources
@@ -174,6 +182,8 @@ jobs:
           export NUM_REQUESTS="${{ inputs.num_requests }}"
           export CONCURRENT_LEVELS="${{ inputs.concurrent_levels }}"
           export REFRAME_IMAGE_TAG="${{ inputs.reframe_image_tag }}"
+          export THREAD_COUNTS="${{ inputs.thread_counts }}"
+          export MAX_CONCURRENT_TASKS="${{ inputs.max_concurrent_tasks }}"
           export AZURE_RESOURCE_GROUP="${{ env.AZURE_RESOURCE_GROUP }}"
           export AZURE_LOCATION="${{ env.AZURE_LOCATION }}"
           export ACR_URL="${{ secrets.ACR_URL }}"
