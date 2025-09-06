@@ -22,6 +22,8 @@ IFS=',' read -ra VM_SIZE_ARRAY <<< "$VM_SIZES"
 # Track overall progress
 TOTAL_VMS=${#VM_SIZE_ARRAY[@]}
 CURRENT_VM=0
+SUCCESSFUL_TESTS=0
+FAILED_TESTS=0
 
 # Verify benchmark VM is ready before starting
 echo "Verifying benchmark VM setup..."
@@ -100,6 +102,7 @@ for VM_SIZE in "${VM_SIZE_ARRAY[@]}"; do
             echo "ERROR: Failed to get valid Product VM public IP address"
             echo "Last line was: $IP_LINE"
             echo "Skipping this VM configuration..."
+            FAILED_TESTS=$((FAILED_TESTS + 1))
             rm -f "$PROVISION_OUTPUT_FILE"
             continue
         fi
@@ -111,6 +114,7 @@ for VM_SIZE in "${VM_SIZE_ARRAY[@]}"; do
     else
         echo "ERROR: VM provisioning timed out or failed after 10 minutes"
         echo "Skipping this VM configuration..."
+        FAILED_TESTS=$((FAILED_TESTS + 1))
         rm -f "$PROVISION_OUTPUT_FILE"
         continue
     fi
@@ -205,6 +209,7 @@ EOF
     if ! curl -s "http://${PRODUCT_VM_IP}:3000/health" > /dev/null 2>&1; then
         echo "ERROR: Reframe failed to start on $VM_SIZE VM!"
         echo "Skipping this VM..."
+        FAILED_TESTS=$((FAILED_TESTS + 1))
         continue
     fi
     
@@ -403,6 +408,7 @@ EOF
     echo ""
     echo "✅ Completed benchmarking for $VM_SIZE"
     echo "Results saved to: ${RESULTS_DIR}/${VM_SIZE}/"
+    SUCCESSFUL_TESTS=$((SUCCESSFUL_TESTS + 1))
     
     # Clean up benchmark VM results for next run
     ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null azureuser@"$BENCHMARK_VM_IP" << EOF
@@ -419,11 +425,17 @@ done
 
 echo ""
 echo "╔══════════════════════════════════════════════════════════════╗"
-echo "║  All benchmarks completed successfully!"
+if [ $FAILED_TESTS -eq 0 ] && [ $SUCCESSFUL_TESTS -gt 0 ]; then
+    echo "║  All benchmarks completed successfully!"
+else
+    echo "║  Benchmark execution completed with errors!"
+fi
 echo "╚══════════════════════════════════════════════════════════════╝"
 echo ""
 echo "Summary:"
-echo "- VMs tested: $TOTAL_VMS"
+echo "- VMs requested: $TOTAL_VMS"
+echo "- Successful: $SUCCESSFUL_TESTS"
+echo "- Failed: $FAILED_TESTS"
 echo "- Results directory: $RESULTS_DIR"
 echo ""
 
@@ -432,5 +444,18 @@ echo "Copying final aggregated results..."
 scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     azureuser@"$BENCHMARK_VM_IP":/home/azureuser/aggregated_results_*.json \
     "${RESULTS_DIR}/" 2>/dev/null || true
+
+if [ $FAILED_TESTS -gt 0 ]; then
+    echo ""
+    echo "ERROR: Some benchmarks failed. Check logs for details."
+    echo "Common issues:"
+    echo "  - Azure quota exceeded (check core limits)"
+    echo "  - Network issues"
+    echo "  - Docker registry authentication"
+    echo ""
+    echo "To check quota: az vm list-usage --location eastus --query \"[?name.value=='cores']\""
+    echo "To cleanup: ./force-cleanup-all.sh"
+    exit 1
+fi
 
 echo "Sequential benchmark execution complete!"
