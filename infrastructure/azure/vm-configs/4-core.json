@@ -1,0 +1,10 @@
+{
+  "name": "4-core",
+  "azure_sku": "Standard_D4s_v3",
+  "vcpus": 4,
+  "memory_gb": 16,
+  "disk_size_gb": 128,
+  "thread_counts": [2, 4],
+  "max_concurrent_tasks": [8, 16],
+  "description": "Small-scale production workloads"
+}

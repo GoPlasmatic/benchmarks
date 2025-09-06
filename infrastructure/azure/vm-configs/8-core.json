@@ -1,0 +1,10 @@
+{
+  "name": "8-core",
+  "azure_sku": "Standard_D8s_v3",
+  "vcpus": 8,
+  "memory_gb": 32,
+  "disk_size_gb": 256,
+  "thread_counts": [4, 8],
+  "max_concurrent_tasks": [16, 32],
+  "description": "Medium-scale production workloads"
+}

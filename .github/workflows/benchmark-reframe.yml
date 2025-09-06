@@ -1,0 +1,164 @@
+name: Benchmark Reframe Performance
+
+on:
+  workflow_dispatch:
+    inputs:
+      vm_sizes:
+        description: 'VM sizes to benchmark'
+        required: true
+        type: choice
+        options:
+          - '2-core'
+          - '4-core'
+          - '8-core'
+          - '16-core'
+          - 'all'
+        default: 'all'
+      num_requests:
+        description: 'Number of requests per test'
+        required: false
+        default: '100000'
+      concurrent_levels:
+        description: 'Concurrent request levels (comma-separated)'
+        required: false
+        default: '64,256,512'
+      reframe_image_tag:
+        description: 'Reframe Docker image tag'
+        required: false
+        default: 'latest'
+
+env:
+  AZURE_RESOURCE_GROUP: benchmarks-rg
+  AZURE_LOCATION: eastus
+  STORAGE_ACCOUNT: benchmarkstorage
+  STORAGE_CONTAINER: reports
+
+jobs:
+  benchmark-suite:
+    name: Run Benchmark Suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          pip install -r infrastructure/scripts/requirements.txt
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Setup Environment
+        id: setup
+        run: |
+          timestamp=$(date +%Y%m%d_%H%M%S)
+          echo "timestamp=$timestamp" >> $GITHUB_OUTPUT
+          
+          # Determine VM sizes to test
+          if [ "${{ inputs.vm_sizes }}" = "all" ]; then
+            echo "vm_sizes=2-core,4-core,8-core,16-core" >> $GITHUB_OUTPUT
+          else
+            echo "vm_sizes=${{ inputs.vm_sizes }}" >> $GITHUB_OUTPUT
+          fi
+          
+          # Create results directory
+          mkdir -p results/$timestamp
+          echo "results_dir=results/$timestamp" >> $GITHUB_OUTPUT
+
+      - name: Create Benchmark VM
+        id: benchmark_vm
+        run: |
+          echo "Creating benchmark VM (runs benchmark scripts)..."
+          
+          # Create resource group for benchmark VM
+          az group create \
+            --name ${{ env.AZURE_RESOURCE_GROUP }}-benchmark \
+            --location ${{ env.AZURE_LOCATION }}
+          
+          # Provision benchmark VM (small instance)
+          bash infrastructure/azure/provision-benchmark-vm.sh \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }}-benchmark \
+            --location ${{ env.AZURE_LOCATION }}
+          
+          # Get benchmark VM IP
+          benchmark_vm_ip=$(az vm show -d \
+            -g ${{ env.AZURE_RESOURCE_GROUP }}-benchmark \
+            -n benchmark-vm \
+            --query publicIps -o tsv)
+          
+          echo "benchmark_vm_ip=$benchmark_vm_ip" >> $GITHUB_OUTPUT
+          
+          # Copy benchmark scripts to VM
+          scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -r \
+            products/reframe/benchmark/* \
+            azureuser@${benchmark_vm_ip}:/home/azureuser/
+          
+          scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -r \
+            infrastructure/azure/vm-configs \
+            azureuser@${benchmark_vm_ip}:/home/azureuser/infrastructure/azure/
+
+      - name: Run Sequential Benchmarks
+        run: |
+          # Export variables for the script
+          export BENCHMARK_VM_IP="${{ steps.benchmark_vm.outputs.benchmark_vm_ip }}"
+          export RESULTS_DIR="${{ steps.setup.outputs.results_dir }}"
+          export VM_SIZES="${{ steps.setup.outputs.vm_sizes }}"
+          export NUM_REQUESTS="${{ inputs.num_requests }}"
+          export CONCURRENT_LEVELS="${{ inputs.concurrent_levels }}"
+          export REFRAME_IMAGE_TAG="${{ inputs.reframe_image_tag }}"
+          export AZURE_RESOURCE_GROUP="${{ env.AZURE_RESOURCE_GROUP }}"
+          export AZURE_LOCATION="${{ env.AZURE_LOCATION }}"
+          export ACR_USERNAME="${{ secrets.ACR_USERNAME }}"
+          export ACR_PASSWORD="${{ secrets.ACR_PASSWORD }}"
+          
+          # Run the sequential benchmark orchestrator
+          bash infrastructure/scripts/sequential-benchmark.sh
+
+      - name: Generate Comparison Report
+        run: |
+          python infrastructure/scripts/generate_report.py \
+            --results-dir ${{ steps.setup.outputs.results_dir }} \
+            --output-file ${{ steps.setup.outputs.results_dir }}/comparison_report.html
+
+      - name: Upload Results to Artifacts
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: benchmark-results-${{ steps.setup.outputs.timestamp }}
+          path: ${{ steps.setup.outputs.results_dir }}
+
+      - name: Upload to Azure Storage
+        if: always()
+        run: |
+          az storage blob upload-batch \
+            --account-name ${{ env.STORAGE_ACCOUNT }} \
+            --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
+            --destination ${{ env.STORAGE_CONTAINER }}/${{ steps.setup.outputs.timestamp }} \
+            --source ${{ steps.setup.outputs.results_dir }} \
+            --pattern "*"
+
+      - name: Cleanup Benchmark VM
+        if: always()
+        run: |
+          echo "Cleaning up benchmark VM..."
+          az group delete \
+            --name ${{ env.AZURE_RESOURCE_GROUP }}-benchmark \
+            --yes --no-wait
+
+      - name: Display Results Summary
+        run: |
+          echo "## Benchmark Complete! 🎉"
+          echo ""
+          echo "### Results Location:"
+          echo "- Azure Storage: https://${{ env.STORAGE_ACCOUNT }}.blob.core.windows.net/${{ env.STORAGE_CONTAINER }}/${{ steps.setup.outputs.timestamp }}/"
+          echo "- GitHub Artifacts: Check the Actions tab for downloadable results"
+          echo ""
+          echo "### Report URL:"
+          echo "https://${{ env.STORAGE_ACCOUNT }}.blob.core.windows.net/${{ env.STORAGE_CONTAINER }}/${{ steps.setup.outputs.timestamp }}/comparison_report.html"
