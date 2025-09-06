@@ -60,15 +60,17 @@ jobs:
       - name: Pre-run Cleanup
         run: |
           echo "Checking for existing benchmark resource group..."
-          if az group exists --name ${{ env.AZURE_RESOURCE_GROUP }}; then
+          
+          # Check if resource group exists using Azure CLI properly
+          if az group show --name ${{ env.AZURE_RESOURCE_GROUP }} &>/dev/null; then
             echo "Found existing resource group: ${{ env.AZURE_RESOURCE_GROUP }}"
             echo "Deleting all resources..."
-            az group delete --name ${{ env.AZURE_RESOURCE_GROUP }} --yes --no-wait
+            az group delete --name ${{ env.AZURE_RESOURCE_GROUP }} --yes --no-wait || true
             
             echo "Waiting for deletion to complete..."
             # Wait up to 5 minutes for deletion
             for i in {1..30}; do
-              if ! az group exists --name ${{ env.AZURE_RESOURCE_GROUP }}; then
+              if ! az group show --name ${{ env.AZURE_RESOURCE_GROUP }} &>/dev/null; then
                 echo "Resource group deleted successfully"
                 break
               fi
@@ -165,6 +167,7 @@ jobs:
         with:
           name: benchmark-results-${{ steps.setup.outputs.timestamp }}
           path: ${{ steps.setup.outputs.results_dir }}
+          if-no-files-found: warn
 
       - name: Upload to Azure Storage
         if: always()
@@ -186,12 +189,12 @@ jobs:
           echo "Performing final cleanup of benchmark resources..."
           
           # Simply delete the entire resource group - this removes everything
-          if az group exists --name ${{ env.AZURE_RESOURCE_GROUP }}; then
+          if az group show --name ${{ env.AZURE_RESOURCE_GROUP }} &>/dev/null; then
             echo "Deleting resource group: ${{ env.AZURE_RESOURCE_GROUP }}"
             az group delete \
               --name ${{ env.AZURE_RESOURCE_GROUP }} \
               --yes \
-              --no-wait
+              --no-wait || true
             echo "Resource group deletion initiated. All resources will be removed."
           else
             echo "Resource group already deleted or doesn't exist."

@@ -59,7 +59,7 @@ for VM_SIZE in "${VM_SIZE_ARRAY[@]}"; do
     
     # Step 1: Verify resource group exists
     echo "Step 1/8: Verifying resource group..."
-    if ! az group exists --name "${AZURE_RESOURCE_GROUP}"; then
+    if ! az group show --name "${AZURE_RESOURCE_GROUP}" &>/dev/null; then
         echo "Creating resource group: ${AZURE_RESOURCE_GROUP}"
         az group create \
             --name "${AZURE_RESOURCE_GROUP}" \
