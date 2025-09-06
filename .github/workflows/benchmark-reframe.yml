@@ -128,14 +128,42 @@ jobs:
           
           echo "benchmark_vm_ip=$benchmark_vm_ip" >> $GITHUB_OUTPUT
           
+          # Wait for SSH to be ready
+          echo "Waiting for SSH to be ready on benchmark VM..."
+          for i in {1..30}; do
+            if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+                -o ConnectTimeout=5 azureuser@${benchmark_vm_ip} "echo 'SSH ready'" 2>/dev/null; then
+              echo "SSH is ready!"
+              break
+            fi
+            echo "Waiting for SSH... ($i/30)"
+            sleep 5
+          done
+          
           # Copy benchmark scripts to VM
+          echo "Copying benchmark scripts to VM..."
           scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -r \
             products/reframe/benchmark/* \
-            azureuser@${benchmark_vm_ip}:/home/azureuser/
+            azureuser@${benchmark_vm_ip}:/home/azureuser/ || {
+            echo "ERROR: Failed to copy benchmark scripts!"
+            exit 1
+          }
+          
+          # Create infrastructure directory structure
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            azureuser@${benchmark_vm_ip} "mkdir -p /home/azureuser/infrastructure/azure"
           
           scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -r \
             infrastructure/azure/vm-configs \
-            azureuser@${benchmark_vm_ip}:/home/azureuser/infrastructure/azure/
+            azureuser@${benchmark_vm_ip}:/home/azureuser/infrastructure/azure/ || {
+            echo "ERROR: Failed to copy VM configs!"
+            exit 1
+          }
+          
+          # Verify files were copied
+          echo "Verifying files on benchmark VM..."
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            azureuser@${benchmark_vm_ip} "ls -la /home/azureuser/"
 
       - name: Run Sequential Benchmarks
         run: |

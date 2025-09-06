@@ -23,7 +23,11 @@ CURRENT_VM=0
 
 # Verify benchmark VM is ready before starting
 echo "Verifying benchmark VM setup..."
-ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null azureuser@"$BENCHMARK_VM_IP" << 'EOF'
+if ! ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o ConnectTimeout=10 azureuser@"$BENCHMARK_VM_IP" << 'EOF'
+set -e
+echo "Connected to benchmark VM"
+
 # Check if enhanced_benchmark.py exists
 if [ ! -f /home/azureuser/enhanced_benchmark.py ]; then
     echo "ERROR: Benchmark script not found on benchmark VM!"
@@ -34,16 +38,19 @@ fi
 
 # Check Python packages
 echo "Checking Python packages..."
-python3 -c "import aiohttp, requests, psutil, pandas, matplotlib, jinja2" 2>/dev/null || {
+if ! python3 -c "import aiohttp, requests, psutil, pandas, matplotlib, jinja2" 2>/dev/null; then
     echo "Installing missing Python packages..."
     pip3 install --user aiohttp requests psutil pandas matplotlib jinja2
-}
+fi
 
 echo "Benchmark VM is ready!"
 EOF
-
-if [ $? -ne 0 ]; then
+then
     echo "ERROR: Benchmark VM setup verification failed!"
+    echo "Check if:"
+    echo "  1. Benchmark VM IP is correct: $BENCHMARK_VM_IP"
+    echo "  2. SSH key is properly configured"
+    echo "  3. Benchmark scripts were copied to the VM"
     exit 1
 fi
 
