@@ -164,6 +164,7 @@ if [ \$? -ne 0 ]; then
 fi
 
 # Create docker-compose.yml (will be updated per test)
+# No resource limits - container can use 100% of available CPU and memory
 cat << COMPOSE > /home/azureuser/docker-compose.yml
 services:
   reframe:
@@ -177,11 +178,6 @@ services:
       - REFRAME_THREAD_COUNT=4
       - REFRAME_MAX_CONCURRENT_TASKS=16
     restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 6G
-          cpus: '0.95'
     logging:
       driver: json-file
       options:
@@ -266,12 +262,13 @@ EOF
             echo "Max Concurrent Tasks: $max_tasks"
             
             # Update Reframe configuration
+            echo "Restarting Reframe with threads=$thread_count, tasks=$max_tasks (no CPU limit)"
             ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null azureuser@"$PRODUCT_VM_IP" << EOF
 # Stop current container
 docker stop reframe-benchmark 2>/dev/null || true
 docker rm reframe-benchmark 2>/dev/null || true
 
-# Start with new configuration
+# Start with new configuration (no CPU or memory limits)
 docker run -d \
     --name reframe-benchmark \
     -p 3000:3000 \
@@ -280,13 +277,31 @@ docker run -d \
     -e REFRAME_THREAD_COUNT=$thread_count \
     -e REFRAME_MAX_CONCURRENT_TASKS=$max_tasks \
     --restart unless-stopped \
-    --memory="6g" \
-    --cpus="0.95" \
     ${ACR_URL}/reframe:${REFRAME_IMAGE_TAG}
+
+# Verify the container is using correct settings
+echo "Container environment variables:"
+docker exec reframe-benchmark env | grep REFRAME || echo "No REFRAME vars found"
 
 # Wait for service to be ready
 sleep 10
+
+# Check container configuration
+echo "Verifying container configuration (no limits should be set):"
+docker inspect reframe-benchmark --format='Memory Limit: {{.HostConfig.Memory}} (0 means no limit)'
+docker inspect reframe-benchmark --format='CPU Quota: {{.HostConfig.CpuQuota}} (0 or -1 means no limit)'
 EOF
+            
+            # Verify Reframe is responding with updated config
+            echo "Checking Reframe health after restart..."
+            for i in {1..10}; do
+                if curl -s "http://${PRODUCT_VM_IP}:3000/health" > /dev/null 2>&1; then
+                    echo "✓ Reframe is running with new configuration"
+                    break
+                fi
+                echo "Waiting for Reframe... ($i/10)"
+                sleep 2
+            done
             
             # Run benchmark on benchmark VM
             echo "Running benchmark test ${TEST_NUM} on benchmark VM..."
