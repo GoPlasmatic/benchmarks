@@ -159,12 +159,26 @@ PRODUCT_VM_IP=$(az vm show -d \
     --query publicIps -o tsv)
 
 # Wait for VM to be ready
-echo "Waiting for VM to be ready..."
+echo "Waiting for VM to be ready..." >&2
 sleep 30
 
+# Wait for SSH to be available
+echo "Waiting for SSH to be available..." >&2
+for i in {1..30}; do
+    if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o ConnectTimeout=5 azureuser@"$PRODUCT_VM_IP" "echo 'SSH ready'" 2>/dev/null; then
+        echo "SSH is ready!" >&2
+        break
+    fi
+    echo "  Waiting for SSH... ($i/30)" >&2
+    sleep 5
+done
+
 # Install Docker
-echo "Installing Docker on Product VM..."
-ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null azureuser@"$PRODUCT_VM_IP" << 'EOF'
+echo "Installing Docker on Product VM..." >&2
+if ! timeout 300 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o ServerAliveInterval=10 -o ServerAliveCountMax=3 \
+    azureuser@"$PRODUCT_VM_IP" << 'EOF'
 # Update system
 sudo apt-get update
 sudo apt-get install -y ca-certificates curl gnupg
@@ -194,10 +208,14 @@ sudo apt-get install -y htop sysstat
 sudo systemctl enable docker
 sudo systemctl start docker
 EOF
+then
+    echo "ERROR: Docker installation timed out or failed!" >&2
+    exit 1
+fi
 
-echo "=========================================="
-echo "Product VM Provisioning Complete!"
-echo "Product VM IP: $PRODUCT_VM_IP"
+echo "=========================================="  >&2
+echo "Product VM Provisioning Complete!"  >&2
+echo "Product VM IP: $PRODUCT_VM_IP"  >&2
 echo "=========================================="  >&2
 
 # Return ONLY the IP address on stdout (last line)

@@ -77,25 +77,36 @@ for VM_SIZE in "${VM_SIZE_ARRAY[@]}"; do
     
     # Step 2: Provision Product VM
     echo "Step 2/8: Provisioning $VM_SIZE Product VM..."
+    echo "This may take a few minutes..."
     
-    # Run provisioning and capture output
-    PROVISION_OUTPUT=$(bash infrastructure/azure/provision-product-vm.sh \
+    # Create a temp file for output
+    PROVISION_OUTPUT_FILE="/tmp/provision_output_$$"
+    
+    # Run provisioning with timeout (10 minutes max) and save output
+    if timeout 600 bash infrastructure/azure/provision-product-vm.sh \
         --vm-size "$VM_SIZE" \
         --resource-group "${AZURE_RESOURCE_GROUP}" \
-        --location "$AZURE_LOCATION" 2>&1)
-    
-    # Extract IP from the last line
-    PRODUCT_VM_IP=$(echo "$PROVISION_OUTPUT" | tail -n 1)
-    
-    # Validate IP address
-    if [[ ! "$PRODUCT_VM_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        echo "ERROR: Failed to get valid Product VM IP address"
-        echo "Provisioning output:"
-        echo "$PROVISION_OUTPUT"
+        --location "$AZURE_LOCATION" 2>&1 | tee "$PROVISION_OUTPUT_FILE"; then
+        
+        # Extract IP from the last line
+        PRODUCT_VM_IP=$(tail -n 1 "$PROVISION_OUTPUT_FILE")
+        
+        # Validate IP address
+        if [[ ! "$PRODUCT_VM_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: Failed to get valid Product VM IP address"
+            echo "Last line was: $PRODUCT_VM_IP"
+            echo "Skipping this VM configuration..."
+            rm -f "$PROVISION_OUTPUT_FILE"
+            continue
+        fi
+    else
+        echo "ERROR: VM provisioning timed out or failed after 10 minutes"
         echo "Skipping this VM configuration..."
-        # Note: Not deleting resource group as it's shared
+        rm -f "$PROVISION_OUTPUT_FILE"
         continue
     fi
+    
+    rm -f "$PROVISION_OUTPUT_FILE"
     
     echo "Product VM IP: $PRODUCT_VM_IP"
     
