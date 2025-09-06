@@ -236,12 +236,9 @@ EOF
             echo "  Starting at: $(date)"
             
             # Use timeout command to prevent hanging (5 minutes max per test)
-            timeout 300 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            if ! timeout 300 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
                 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 \
-                azureuser@"$BENCHMARK_VM_IP" << EOF || {
-                echo "ERROR: Benchmark test ${TEST_NUM} timed out after 5 minutes!"
-                continue
-            }
+                azureuser@"$BENCHMARK_VM_IP" << EOF
 set -e
 cd /home/azureuser
 
@@ -264,9 +261,8 @@ python3 -u enhanced_benchmark.py \
 
 echo "Benchmark execution completed for test ${TEST_NUM}"
 EOF
-            
-            if [ $? -ne 0 ]; then
-                echo "ERROR: Benchmark test ${TEST_NUM} failed!"
+            then
+                echo "ERROR: Benchmark test ${TEST_NUM} timed out or failed!"
                 continue
             fi
         done
