@@ -40,7 +40,7 @@ class FixedBenchmark:
             force_close=True,  # IMPORTANT: Force close connections
             ttl_dns_cache=300,
             enable_cleanup_closed=True,
-            keepalive_timeout=30,  # Shorter keepalive
+            # Note: keepalive_timeout cannot be set when force_close=True
         )
         
         timeout = aiohttp.ClientTimeout(
