@@ -60,11 +60,11 @@ jobs:
       benchmark_vm_ip: ${{ steps.deploy.outputs.benchmark_vm_ip }}
     
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       
       - name: Azure Login
         if: github.event.inputs.reframe_url == ''
-        uses: azure/login@v1
+        uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
       
@@ -87,7 +87,7 @@ jobs:
           az vm create \
             --resource-group $AZURE_RESOURCE_GROUP \
             --name $REFRAME_VM_NAME \
-            --image UbuntuLTS \
+            --image Ubuntu2204 \
             --size $AZURE_SKU \
             --admin-username azureuser \
             --generate-ssh-keys \
@@ -102,7 +102,7 @@ jobs:
           az vm create \
             --resource-group $AZURE_RESOURCE_GROUP \
             --name $BENCHMARK_VM_NAME \
-            --image UbuntuLTS \
+            --image Ubuntu2204 \
             --size Standard_D4s_v3 \
             --admin-username azureuser \
             --generate-ssh-keys \
@@ -124,10 +124,10 @@ jobs:
     if: contains(fromJSON('["diagnostic", "full"]'), github.event.inputs.investigation_type || 'full')
     
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       
@@ -174,7 +174,7 @@ jobs:
           fi
       
       - name: Upload Diagnostic Results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: diagnostic-results-${{ github.run_id }}
           path: |
@@ -188,10 +188,10 @@ jobs:
     if: contains(fromJSON('["degradation", "full"]'), github.event.inputs.investigation_type || 'full')
     
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       
@@ -221,7 +221,7 @@ jobs:
           fi
       
       - name: Upload Degradation Results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: degradation-results-${{ github.run_id }}
           path: |
@@ -239,10 +239,10 @@ jobs:
         benchmark_type: [original, optimized, fixed]
     
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       
@@ -277,7 +277,7 @@ jobs:
             2>&1 | tee ${{ matrix.benchmark_type }}_output.log
       
       - name: Upload ${{ matrix.benchmark_type }} Results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: comparison-${{ matrix.benchmark_type }}-${{ github.run_id }}
           path: |
@@ -291,10 +291,10 @@ jobs:
     if: always()
     
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       
       - name: Download All Artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           path: artifacts
       
@@ -370,7 +370,7 @@ jobs:
       
       - name: Post Report as Comment
         if: github.event_name == 'pull_request'
-        uses: actions/github-script@v6
+        uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
@@ -384,14 +384,14 @@ jobs:
             });
       
       - name: Upload Final Report
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: performance-report-${{ github.run_id }}
           path: report.md
       
       - name: Store in Azure Storage
         if: success()
-        uses: azure/CLI@v1
+        uses: azure/CLI@v2
         with:
           inlineScript: |
             # Create storage container if not exists
@@ -419,7 +419,7 @@ jobs:
     
     steps:
       - name: Azure Login
-        uses: azure/login@v1
+        uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
       
@@ -438,7 +438,7 @@ jobs:
       
       - name: Create Issue if Degradation Detected
         if: needs.run-degradation-analysis.outputs.degradation_detected == 'true'
-        uses: actions/github-script@v6
+        uses: actions/github-script@v7
         with:
           script: |
             const title = `Performance Degradation Detected - Run #${context.runId}`;

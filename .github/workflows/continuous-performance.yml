@@ -29,10 +29,10 @@ jobs:
       metrics: ${{ steps.check.outputs.metrics }}
     
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       
@@ -118,7 +118,7 @@ jobs:
           echo "needs_investigation=${NEEDS_INVESTIGATION}" >> $GITHUB_OUTPUT
       
       - name: Upload Quick Check Results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: quick-check-${{ github.run_id }}
           path: |
@@ -133,7 +133,7 @@ jobs:
     
     steps:
       - name: Trigger Investigation Workflow
-        uses: actions/github-script@v6
+        uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -158,12 +158,12 @@ jobs:
     if: github.event_name == 'pull_request'
     
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       
@@ -227,7 +227,7 @@ jobs:
       
       - name: Post PR Comment
         if: always()
-        uses: actions/github-script@v6
+        uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
@@ -247,7 +247,7 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'push'
     
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       
       - name: Update Metrics
         run: |
@@ -349,7 +349,7 @@ jobs:
             }"
       
       - name: Create GitHub Issue
-        uses: actions/github-script@v6
+        uses: actions/github-script@v7
         with:
           script: |
             const metrics = JSON.parse('${{ needs.quick-performance-check.outputs.metrics }}');
