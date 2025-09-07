@@ -1,0 +1,85 @@
+version: '3.8'
+
+services:
+  # Reframe API service (target application)
+  reframe:
+    image: ${ACR_REGISTRY}/reframe-api:${REFRAME_VERSION:-latest}
+    container_name: reframe-api
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - REFRAME_THREAD_COUNT=${REFRAME_THREAD_COUNT:-8}
+      - REFRAME_MAX_CONCURRENT_TASKS=${REFRAME_MAX_CONCURRENT_TASKS:-32}
+      - REFRAME_WORKER_POOL_SIZE=${REFRAME_WORKER_POOL_SIZE:-16}
+      - UV_THREADPOOL_SIZE=${UV_THREADPOOL_SIZE:-128}
+      - NODE_OPTIONS=--max-old-space-size=4096
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+      nproc:
+        soft: 32768
+        hard: 32768
+    sysctls:
+      - net.core.somaxconn=65535
+      - net.ipv4.tcp_max_syn_backlog=65535
+      - net.ipv4.tcp_tw_reuse=1
+    networks:
+      - benchmark-net
+    deploy:
+      resources:
+        limits:
+          cpus: '${REFRAME_CPU_LIMIT:-4}'
+          memory: '${REFRAME_MEMORY_LIMIT:-8G}'
+        reservations:
+          cpus: '${REFRAME_CPU_RESERVATION:-2}'
+          memory: '${REFRAME_MEMORY_RESERVATION:-4G}'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # Benchmark runner service
+  benchmark:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.benchmark
+    container_name: benchmark-runner
+    environment:
+      - BENCHMARK_VM_SIZE=${VM_SIZE:-8-core}
+      - BENCHMARK_NUM_REQUESTS=${NUM_REQUESTS:-100000}
+      - BENCHMARK_CONCURRENT_LEVELS=${CONCURRENT_LEVELS:-64,128,256,512}
+      - REFRAME_URL=http://reframe:3000
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./results:/benchmark/results
+      - ./configs:/benchmark/configs:ro
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+      nproc:
+        soft: 32768
+        hard: 32768
+    sysctls:
+      - net.core.somaxconn=65535
+      - net.ipv4.tcp_tw_reuse=1
+    networks:
+      - benchmark-net
+    depends_on:
+      reframe:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '${BENCHMARK_CPU_LIMIT:-2}'
+          memory: '${BENCHMARK_MEMORY_LIMIT:-4G}'
+
+networks:
+  benchmark-net:
+    driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: 1500

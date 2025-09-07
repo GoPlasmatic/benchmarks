@@ -264,11 +264,16 @@ EOF
             # Update Reframe configuration
             echo "Restarting Reframe with threads=$thread_count, tasks=$max_tasks (no CPU limit)"
             ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null azureuser@"$PRODUCT_VM_IP" << EOF
-# Stop current container
+# Stop and remove current container completely
+echo "Stopping existing container..."
 docker stop reframe-benchmark 2>/dev/null || true
-docker rm reframe-benchmark 2>/dev/null || true
+docker rm -f reframe-benchmark 2>/dev/null || true
+
+# Wait for port to be free
+sleep 2
 
 # Start with new configuration (no CPU or memory limits)
+echo "Starting new container with REFRAME_THREAD_COUNT=$thread_count and REFRAME_MAX_CONCURRENT_TASKS=$max_tasks"
 docker run -d \
     --name reframe-benchmark \
     -p 3000:3000 \
@@ -282,6 +287,10 @@ docker run -d \
 # Verify the container is using correct settings
 echo "Container environment variables:"
 docker exec reframe-benchmark env | grep REFRAME || echo "No REFRAME vars found"
+
+# Extra verification - check if Reframe is actually using these values
+echo "Testing if Reframe responds to config:"
+docker exec reframe-benchmark ps aux | grep node || echo "No node process found"
 
 # Wait for service to be ready
 sleep 10
@@ -297,6 +306,8 @@ EOF
             for i in {1..10}; do
                 if curl -s "http://${PRODUCT_VM_IP}:3000/health" > /dev/null 2>&1; then
                     echo "✓ Reframe is running with new configuration"
+                    echo "Health check response:"
+                    curl -s "http://${PRODUCT_VM_IP}:3000/health" | jq . || true
                     break
                 fi
                 echo "Waiting for Reframe... ($i/10)"
