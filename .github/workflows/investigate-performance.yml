@@ -68,6 +68,52 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
       
+      - name: Cleanup Old VMs
+        if: github.event.inputs.reframe_url == ''
+        continue-on-error: true
+        run: |
+          echo "Cleaning up old VMs to free quota..."
+          
+          # Get current quota usage
+          CURRENT_USAGE=$(az vm list-usage -l $AZURE_LOCATION --query "[?name.value=='cores'].currentValue" -o tsv)
+          QUOTA_LIMIT=$(az vm list-usage -l $AZURE_LOCATION --query "[?name.value=='cores'].limit" -o tsv)
+          echo "Current quota: $CURRENT_USAGE / $QUOTA_LIMIT cores used"
+          
+          # Delete ALL existing benchmark VMs to ensure clean state
+          echo "Deleting all existing benchmark VMs..."
+          EXISTING_VMS=$(az vm list -g $AZURE_RESOURCE_GROUP --query "[?contains(name, 'vm-') && (contains(name, 'reframe') || contains(name, 'benchmark'))].name" -o tsv)
+          
+          if [ -n "$EXISTING_VMS" ]; then
+            echo "Found VMs to delete:"
+            echo "$EXISTING_VMS"
+            
+            # Delete all VMs in parallel
+            for VM in $EXISTING_VMS; do
+              echo "Deleting: $VM"
+              az vm delete -g $AZURE_RESOURCE_GROUP -n "$VM" --yes --force-deletion --no-wait &
+            done
+            
+            # Wait for deletions to complete (max 2 minutes)
+            echo "Waiting for deletions to complete..."
+            WAIT_TIME=0
+            while [ $WAIT_TIME -lt 120 ]; do
+              REMAINING=$(az vm list -g $AZURE_RESOURCE_GROUP --query "[?contains(name, 'vm-') && (contains(name, 'reframe') || contains(name, 'benchmark'))].name" -o tsv | wc -l)
+              if [ "$REMAINING" -eq "0" ]; then
+                echo "All VMs deleted"
+                break
+              fi
+              echo "Waiting... ($REMAINING VMs remaining)"
+              sleep 10
+              WAIT_TIME=$((WAIT_TIME + 10))
+            done
+          else
+            echo "No existing VMs to clean up"
+          fi
+          
+          # Show quota after cleanup
+          CURRENT_USAGE=$(az vm list-usage -l $AZURE_LOCATION --query "[?name.value=='cores'].currentValue" -o tsv)
+          echo "Quota after cleanup: $CURRENT_USAGE / $QUOTA_LIMIT cores used"
+      
       - name: Deploy Infrastructure
         id: deploy
         if: github.event.inputs.reframe_url == ''
@@ -82,8 +128,24 @@ jobs:
           # Create resource group
           az group create -n $AZURE_RESOURCE_GROUP -l $AZURE_LOCATION
           
-          # Deploy Reframe VM
-          REFRAME_VM_NAME="vm-reframe-${GITHUB_RUN_ID}"
+          # Deploy Reframe VM with unique naming and quota-aware sizing
+          # Use shorter unique identifier to avoid long names
+          UNIQUE_ID=$(echo ${GITHUB_RUN_ID} | cut -c1-8)
+          REFRAME_VM_NAME="vm-reframe-${UNIQUE_ID}"
+          
+          # Check available quota
+          CURRENT_USAGE=$(az vm list-usage -l $AZURE_LOCATION --query "[?name.value=='cores'].currentValue" -o tsv)
+          QUOTA_LIMIT=$(az vm list-usage -l $AZURE_LOCATION --query "[?name.value=='cores'].limit" -o tsv)
+          AVAILABLE=$((QUOTA_LIMIT - CURRENT_USAGE))
+          
+          echo "Quota: Using $CURRENT_USAGE of $QUOTA_LIMIT cores, $AVAILABLE available"
+          
+          # Use smaller VM if quota is limited
+          if [ $AVAILABLE -lt 8 ]; then
+            echo "Limited quota. Using smaller VM size."
+            AZURE_SKU="Standard_B2s"  # 2 vCPUs
+          fi
+          
           az vm create \
             --resource-group $AZURE_RESOURCE_GROUP \
             --name $REFRAME_VM_NAME \
@@ -92,24 +154,36 @@ jobs:
             --admin-username azureuser \
             --generate-ssh-keys \
             --public-ip-address-allocation static \
-            --accelerated-networking true
+            --accelerated-networking false
           
           REFRAME_IP=$(az vm show -d -g $AZURE_RESOURCE_GROUP -n $REFRAME_VM_NAME --query publicIps -o tsv)
           echo "reframe_url=http://${REFRAME_IP}:3000" >> $GITHUB_OUTPUT
           
-          # Deploy Benchmark VM
-          BENCHMARK_VM_NAME="vm-benchmark-${GITHUB_RUN_ID}"
-          az vm create \
-            --resource-group $AZURE_RESOURCE_GROUP \
-            --name $BENCHMARK_VM_NAME \
-            --image Ubuntu2204 \
-            --size Standard_D4s_v3 \
-            --admin-username azureuser \
-            --generate-ssh-keys \
-            --public-ip-address-allocation static
+          # Deploy Benchmark VM (use smaller size to fit quota)
+          UNIQUE_ID=$(echo ${GITHUB_RUN_ID} | cut -c1-8)
+          BENCHMARK_VM_NAME="vm-bench-${UNIQUE_ID}"
           
-          BENCHMARK_IP=$(az vm show -d -g $AZURE_RESOURCE_GROUP -n $BENCHMARK_VM_NAME --query publicIps -o tsv)
-          echo "benchmark_vm_ip=${BENCHMARK_IP}" >> $GITHUB_OUTPUT
+          # Check remaining quota
+          CURRENT_USAGE=$(az vm list-usage -l $AZURE_LOCATION --query "[?name.value=='cores'].currentValue" -o tsv)
+          AVAILABLE=$((QUOTA_LIMIT - CURRENT_USAGE))
+          
+          if [ $AVAILABLE -lt 4 ]; then
+            echo "Skipping benchmark VM due to quota limits"
+            echo "benchmark_vm_ip=localhost" >> $GITHUB_OUTPUT
+          else
+            az vm create \
+              --resource-group $AZURE_RESOURCE_GROUP \
+              --name $BENCHMARK_VM_NAME \
+              --image Ubuntu2204 \
+              --size Standard_B2s \
+              --admin-username azureuser \
+              --generate-ssh-keys \
+              --public-ip-address-allocation static \
+              --no-wait
+            
+            BENCHMARK_IP=$(az vm show -d -g $AZURE_RESOURCE_GROUP -n $BENCHMARK_VM_NAME --query publicIps -o tsv 2>/dev/null || echo "localhost")
+            echo "benchmark_vm_ip=${BENCHMARK_IP}" >> $GITHUB_OUTPUT
+          fi
       
       - name: Use Provided URL
         if: github.event.inputs.reframe_url != ''
@@ -469,16 +543,30 @@ jobs:
       
       - name: Delete VMs
         run: |
-          # Delete VMs created for this run
-          az vm delete \
-            --resource-group $AZURE_RESOURCE_GROUP \
-            --name "vm-reframe-${GITHUB_RUN_ID}" \
-            --yes --no-wait
+          echo "Cleaning up all benchmark VMs..."
           
-          az vm delete \
-            --resource-group $AZURE_RESOURCE_GROUP \
-            --name "vm-benchmark-${GITHUB_RUN_ID}" \
-            --yes --no-wait
+          # Get unique ID used for this run
+          UNIQUE_ID=$(echo ${GITHUB_RUN_ID} | cut -c1-8)
+          
+          # Delete VMs from this run
+          echo "Deleting VMs from this run (ID: $UNIQUE_ID)..."
+          az vm delete -g $AZURE_RESOURCE_GROUP -n "vm-reframe-${UNIQUE_ID}" --yes --force-deletion --no-wait 2>/dev/null || true
+          az vm delete -g $AZURE_RESOURCE_GROUP -n "vm-bench-${UNIQUE_ID}" --yes --force-deletion --no-wait 2>/dev/null || true
+          
+          # Delete ALL benchmark VMs to ensure cleanup
+          echo "Deleting all benchmark VMs in resource group..."
+          ALL_VMS=$(az vm list -g $AZURE_RESOURCE_GROUP --query "[?contains(name, 'vm-')].name" -o tsv)
+          
+          if [ -n "$ALL_VMS" ]; then
+            echo "VMs to delete:"
+            echo "$ALL_VMS"
+            for VM in $ALL_VMS; do
+              az vm delete -g $AZURE_RESOURCE_GROUP -n "$VM" --yes --force-deletion --no-wait &
+            done
+            wait
+          fi
+          
+          echo "All VM deletions initiated"
       
       - name: Create Issue if Degradation Detected
         if: needs.run-degradation-analysis.outputs.degradation_detected == 'true'
