@@ -394,13 +394,25 @@ jobs:
         uses: azure/CLI@v2
         with:
           inlineScript: |
+            # Get storage account from resource group
+            STORAGE_ACCOUNT=$(az storage account list -g ${{ env.AZURE_RESOURCE_GROUP }} --query "[0].name" -o tsv)
+            
+            if [ -z "$STORAGE_ACCOUNT" ]; then
+              echo "Creating storage account..."
+              STORAGE_ACCOUNT="stbenchmark${GITHUB_RUN_ID:0:8}"
+              az storage account create \
+                --name "$STORAGE_ACCOUNT" \
+                --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+                --location ${{ env.AZURE_LOCATION }} \
+                --sku Standard_LRS
+            fi
+            
             # Create storage container if not exists
             az storage container create \
               --name ${{ env.RESULTS_CONTAINER }} \
-              --account-name ${{ secrets.AZURE_STORAGE_ACCOUNT }} \
-              --auth-mode key \
-              --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
-              --public-access off
+              --account-name "$STORAGE_ACCOUNT" \
+              --auth-mode login \
+              --public-access off 2>/dev/null || true
             
             # Upload report
             TIMESTAMP=$(date +%Y%m%d_%H%M%S)
@@ -408,8 +420,11 @@ jobs:
               --container-name ${{ env.RESULTS_CONTAINER }} \
               --name "reports/${TIMESTAMP}_investigation_${{ github.run_id }}.md" \
               --file report.md \
-              --account-name ${{ secrets.AZURE_STORAGE_ACCOUNT }} \
-              --account-key ${{ secrets.AZURE_STORAGE_KEY }}
+              --account-name "$STORAGE_ACCOUNT" \
+              --auth-mode login \
+              --overwrite true
+            
+            echo "✅ Report uploaded to storage account: $STORAGE_ACCOUNT"
 
   cleanup:
     name: Cleanup Resources

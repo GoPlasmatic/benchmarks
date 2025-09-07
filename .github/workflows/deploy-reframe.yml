@@ -1,0 +1,184 @@
+name: Deploy Reframe from ACR
+
+on:
+  workflow_dispatch:
+    inputs:
+      vm_size:
+        description: 'VM Size for deployment'
+        required: true
+        default: '8-core'
+        type: choice
+        options:
+          - '4-core'
+          - '8-core'
+          - '16-core'
+      image_tag:
+        description: 'Docker image tag from ACR'
+        required: false
+        default: 'latest'
+
+env:
+  AZURE_RESOURCE_GROUP: 'rg-benchmarks'
+  AZURE_LOCATION: 'eastus2'
+
+jobs:
+  deploy-reframe:
+    name: Deploy Reframe Server
+    runs-on: ubuntu-latest
+    outputs:
+      reframe_url: ${{ steps.deploy.outputs.reframe_url }}
+      
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      - name: Get VM Configuration
+        id: vm-config
+        run: |
+          VM_CONFIG=$(cat infrastructure/azure/vm-configs/${{ github.event.inputs.vm_size }}.json)
+          AZURE_SKU=$(echo $VM_CONFIG | jq -r '.azure_sku')
+          echo "azure_sku=$AZURE_SKU" >> $GITHUB_OUTPUT
+          echo "VM SKU: $AZURE_SKU"
+      
+      - name: Create Resource Group
+        run: |
+          az group create \
+            --name ${{ env.AZURE_RESOURCE_GROUP }} \
+            --location ${{ env.AZURE_LOCATION }}
+      
+      - name: Deploy Reframe VM
+        id: deploy
+        run: |
+          VM_NAME="vm-reframe-${{ github.event.inputs.vm_size }}-${GITHUB_RUN_ID}"
+          
+          # Create VM
+          az vm create \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --name $VM_NAME \
+            --image Ubuntu2204 \
+            --size ${{ steps.vm-config.outputs.azure_sku }} \
+            --admin-username azureuser \
+            --generate-ssh-keys \
+            --public-ip-address-allocation static \
+            --accelerated-networking true \
+            --storage-sku Premium_LRS \
+            --os-disk-size-gb 256
+          
+          # Get IP
+          VM_IP=$(az vm show -d -g ${{ env.AZURE_RESOURCE_GROUP }} -n $VM_NAME --query publicIps -o tsv)
+          echo "reframe_url=http://${VM_IP}:3000" >> $GITHUB_OUTPUT
+          echo "vm_name=$VM_NAME" >> $GITHUB_OUTPUT
+          
+          echo "VM deployed: $VM_NAME at $VM_IP"
+      
+      - name: Configure VM and Deploy Reframe
+        run: |
+          VM_NAME="${{ steps.deploy.outputs.vm_name }}"
+          
+          # Install Docker and dependencies
+          az vm run-command invoke \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --name $VM_NAME \
+            --command-id RunShellScript \
+            --scripts '
+              # Update system
+              sudo apt-get update
+              sudo apt-get upgrade -y
+              
+              # Install Docker
+              curl -fsSL https://get.docker.com | sudo sh
+              sudo usermod -aG docker azureuser
+              
+              # Install Azure CLI
+              curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+              
+              # Apply system optimizations
+              sudo sysctl -w fs.file-max=2097152
+              sudo sysctl -w net.core.somaxconn=65535
+              sudo sysctl -w net.ipv4.tcp_max_syn_backlog=65535
+              sudo sysctl -w net.ipv4.tcp_tw_reuse=1
+              sudo sysctl -w net.ipv4.tcp_fin_timeout=15
+              
+              echo "VM configuration complete"
+            '
+      
+      - name: Deploy Reframe Container
+        run: |
+          VM_NAME="${{ steps.deploy.outputs.vm_name }}"
+          
+          # Login to ACR and run Reframe container
+          az vm run-command invoke \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --name $VM_NAME \
+            --command-id RunShellScript \
+            --scripts "
+              # Login to ACR
+              echo '${{ secrets.ACR_PASSWORD }}' | sudo docker login \
+                ${{ secrets.ACR_URL }} \
+                -u ${{ secrets.ACR_USERNAME }} \
+                --password-stdin
+              
+              # Pull and run Reframe
+              sudo docker pull ${{ secrets.ACR_URL }}/reframe-api:${{ github.event.inputs.image_tag }}
+              
+              # Stop any existing container
+              sudo docker stop reframe-api 2>/dev/null || true
+              sudo docker rm reframe-api 2>/dev/null || true
+              
+              # Run with optimizations
+              sudo docker run -d \
+                --name reframe-api \
+                --restart unless-stopped \
+                -p 3000:3000 \
+                --ulimit nofile=1048576:1048576 \
+                --ulimit nproc=32768:32768 \
+                --sysctl net.core.somaxconn=65535 \
+                --sysctl net.ipv4.tcp_max_syn_backlog=65535 \
+                -e NODE_ENV=production \
+                -e REFRAME_THREAD_COUNT=8 \
+                -e REFRAME_MAX_CONCURRENT_TASKS=64 \
+                -e UV_THREADPOOL_SIZE=128 \
+                -e NODE_OPTIONS='--max-old-space-size=8192' \
+                ${{ secrets.ACR_URL }}/reframe-api:${{ github.event.inputs.image_tag }}
+              
+              # Verify container is running
+              sleep 10
+              sudo docker ps
+              sudo docker logs reframe-api --tail 50
+            "
+      
+      - name: Wait for Reframe
+        run: |
+          REFRAME_URL="${{ steps.deploy.outputs.reframe_url }}"
+          echo "Waiting for Reframe at $REFRAME_URL..."
+          
+          for i in {1..60}; do
+            if curl -f "${REFRAME_URL}/health" 2>/dev/null; then
+              echo "✅ Reframe is ready!"
+              curl "${REFRAME_URL}/health" | jq .
+              break
+            fi
+            echo "Waiting... ($i/60)"
+            sleep 5
+          done
+      
+      - name: Output Summary
+        run: |
+          echo "## Reframe Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **URL** | ${{ steps.deploy.outputs.reframe_url }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **VM Name** | ${{ steps.deploy.outputs.vm_name }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **VM Size** | ${{ github.event.inputs.vm_size }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Image Tag** | ${{ github.event.inputs.image_tag }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Region** | ${{ env.AZURE_LOCATION }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "1. Run performance investigation workflow with URL: \`${{ steps.deploy.outputs.reframe_url }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "2. Access health endpoint: ${{ steps.deploy.outputs.reframe_url }}/health" >> $GITHUB_STEP_SUMMARY
+          echo "3. Remember to delete VM when done to avoid charges" >> $GITHUB_STEP_SUMMARY

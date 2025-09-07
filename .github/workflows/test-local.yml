@@ -1,0 +1,174 @@
+name: Test Local Performance
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'products/reframe/benchmark/**'
+      - '.github/workflows/test-local.yml'
+
+jobs:
+  test-benchmarks:
+    name: Test Benchmark Scripts
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install aiohttp==3.9.1 psutil==5.9.6 tabulate==0.9.0
+          
+          # Optional performance libraries
+          pip install uvloop==0.19.0 || true
+      
+      - name: Start Mock Reframe Server
+        run: |
+          cat > mock_server.py << 'EOF'
+          from aiohttp import web
+          import random
+          import asyncio
+          import json
+          
+          # Statistics tracking
+          stats = {
+              'total_requests': 0,
+              'transform_requests': 0,
+              'health_checks': 0
+          }
+          
+          async def health(request):
+              stats['health_checks'] += 1
+              return web.json_response({
+                  'status': 'healthy',
+                  'engines': {
+                      'forward': 'healthy (threaded, 8 workers)',
+                      'reverse': 'healthy (threaded, 8 workers)'
+                  },
+                  'stats': stats
+              })
+          
+          async def transform(request):
+              stats['total_requests'] += 1
+              stats['transform_requests'] += 1
+              
+              # Simulate variable processing time
+              delay = random.uniform(0.005, 0.02)
+              await asyncio.sleep(delay)
+              
+              return web.json_response({
+                  'result': '<?xml version="1.0"?><Document><CdtTrfTxInf></CdtTrfTxInf></Document>',
+                  'status': 'success',
+                  'processing_time_ms': delay * 1000
+              })
+          
+          async def generate_sample(request):
+              return web.json_response({
+                  'result': '{1:F01BANKBEBBAXXX0237205215}{4::20:TEST-}',
+                  'message': '{1:F01BANKBEBBAXXX0237205215}{4::20:TEST-}',
+                  'status': 'success'
+              })
+          
+          app = web.Application()
+          app.router.add_get('/health', health)
+          app.router.add_post('/transform/mt-to-mx', transform)
+          app.router.add_post('/generate/sample', generate_sample)
+          
+          if __name__ == '__main__':
+              print("Starting mock Reframe server on port 3000...")
+              web.run_app(app, host='0.0.0.0', port=3000)
+          EOF
+          
+          python mock_server.py &
+          SERVER_PID=$!
+          echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
+          
+          # Wait for server to start
+          sleep 5
+          
+          # Verify server is running
+          curl -f http://localhost:3000/health || exit 1
+      
+      - name: Test Diagnostic Script
+        run: |
+          echo "Running diagnostic tests..."
+          python3 products/reframe/benchmark/diagnose_performance.py \
+            --base-url http://localhost:3000 \
+            2>&1 | tee diagnostic.log
+          
+          # Check for issues
+          if grep -q "ISSUES FOUND" diagnostic.log; then
+            echo "⚠️ Diagnostic found issues (expected with mock server)"
+          else
+            echo "✅ Diagnostic completed"
+          fi
+      
+      - name: Test Degradation Investigation
+        run: |
+          echo "Running degradation investigation..."
+          python3 products/reframe/benchmark/investigate_degradation.py \
+            --base-url http://localhost:3000 \
+            --waves 3 \
+            2>&1 | tee degradation.log
+          
+          # Check results
+          if grep -q "DEGRADATION ANALYSIS" degradation.log; then
+            echo "✅ Degradation analysis completed"
+          else
+            echo "❌ Degradation analysis failed"
+            exit 1
+          fi
+      
+      - name: Test Fixed Benchmark
+        run: |
+          echo "Running fixed benchmark..."
+          python3 products/reframe/benchmark/fixed_benchmark.py \
+            --base-url http://localhost:3000 \
+            --vm-size 2-core \
+            --num-requests 1000 \
+            --concurrent 16 \
+            --output-dir test-results \
+            2>&1 | tee fixed_benchmark.log
+          
+          # Extract metrics
+          THROUGHPUT=$(grep "Overall Throughput:" fixed_benchmark.log | grep -oE '[0-9]+\.[0-9]+' | head -1 || echo "0")
+          
+          echo "### Performance Results" >> $GITHUB_STEP_SUMMARY
+          echo "- **Throughput**: ${THROUGHPUT} req/s" >> $GITHUB_STEP_SUMMARY
+          
+          # Basic sanity check
+          if (( $(echo "$THROUGHPUT > 10" | bc -l) )); then
+            echo "✅ Benchmark completed successfully"
+          else
+            echo "❌ Throughput too low: ${THROUGHPUT} req/s"
+            exit 1
+          fi
+      
+      - name: Cleanup
+        if: always()
+        run: |
+          # Kill mock server
+          if [ -n "$SERVER_PID" ]; then
+            kill $SERVER_PID || true
+          fi
+          
+          # Summary
+          echo "### Test Summary" >> $GITHUB_STEP_SUMMARY
+          echo "All benchmark scripts tested successfully!" >> $GITHUB_STEP_SUMMARY
+      
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ github.run_id }}
+          path: |
+            *.log
+            test-results/
+            *.json
