@@ -1,0 +1,470 @@
+name: Investigate Performance
+
+on:
+  workflow_dispatch:
+    inputs:
+      vm_size:
+        description: 'VM Size to test'
+        required: true
+        default: '8-core'
+        type: choice
+        options:
+          - '2-core'
+          - '4-core'
+          - '8-core'
+          - '16-core'
+      investigation_type:
+        description: 'Type of investigation'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+          - 'diagnostic'      # Quick diagnostic
+          - 'degradation'     # Degradation analysis
+          - 'comparison'      # Compare fixed vs original
+          - 'full'           # All investigations
+      reframe_url:
+        description: 'Reframe API URL (leave empty for auto-provisioning)'
+        required: false
+        default: ''
+      num_waves:
+        description: 'Number of waves for degradation test'
+        required: false
+        default: '10'
+      num_requests:
+        description: 'Number of requests per test'
+        required: false
+        default: '50000'
+
+  schedule:
+    # Run nightly performance investigation
+    - cron: '0 2 * * *'
+
+  push:
+    branches: [main]
+    paths:
+      - 'products/reframe/benchmark/**'
+      - '.github/workflows/investigate-performance.yml'
+
+env:
+  AZURE_RESOURCE_GROUP: 'rg-benchmarks'
+  AZURE_LOCATION: 'eastus2'
+  RESULTS_CONTAINER: 'benchmark-results'
+
+jobs:
+  setup-infrastructure:
+    name: Setup Infrastructure
+    runs-on: ubuntu-latest
+    outputs:
+      reframe_url: ${{ steps.deploy.outputs.reframe_url }}
+      benchmark_vm_ip: ${{ steps.deploy.outputs.benchmark_vm_ip }}
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Azure Login
+        if: github.event.inputs.reframe_url == ''
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      - name: Deploy Infrastructure
+        id: deploy
+        if: github.event.inputs.reframe_url == ''
+        run: |
+          # Deploy VMs if URL not provided
+          VM_SIZE="${{ github.event.inputs.vm_size || '8-core' }}"
+          
+          # Get VM configuration
+          VM_CONFIG=$(cat infrastructure/azure/vm-configs/${VM_SIZE}.json)
+          AZURE_SKU=$(echo $VM_CONFIG | jq -r '.azure_sku')
+          
+          # Create resource group
+          az group create -n $AZURE_RESOURCE_GROUP -l $AZURE_LOCATION
+          
+          # Deploy Reframe VM
+          REFRAME_VM_NAME="vm-reframe-${GITHUB_RUN_ID}"
+          az vm create \
+            --resource-group $AZURE_RESOURCE_GROUP \
+            --name $REFRAME_VM_NAME \
+            --image UbuntuLTS \
+            --size $AZURE_SKU \
+            --admin-username azureuser \
+            --generate-ssh-keys \
+            --public-ip-address-allocation static \
+            --accelerated-networking true
+          
+          REFRAME_IP=$(az vm show -d -g $AZURE_RESOURCE_GROUP -n $REFRAME_VM_NAME --query publicIps -o tsv)
+          echo "reframe_url=http://${REFRAME_IP}:3000" >> $GITHUB_OUTPUT
+          
+          # Deploy Benchmark VM
+          BENCHMARK_VM_NAME="vm-benchmark-${GITHUB_RUN_ID}"
+          az vm create \
+            --resource-group $AZURE_RESOURCE_GROUP \
+            --name $BENCHMARK_VM_NAME \
+            --image UbuntuLTS \
+            --size Standard_D4s_v3 \
+            --admin-username azureuser \
+            --generate-ssh-keys \
+            --public-ip-address-allocation static
+          
+          BENCHMARK_IP=$(az vm show -d -g $AZURE_RESOURCE_GROUP -n $BENCHMARK_VM_NAME --query publicIps -o tsv)
+          echo "benchmark_vm_ip=${BENCHMARK_IP}" >> $GITHUB_OUTPUT
+      
+      - name: Use Provided URL
+        if: github.event.inputs.reframe_url != ''
+        run: |
+          echo "reframe_url=${{ github.event.inputs.reframe_url }}" >> $GITHUB_OUTPUT
+          echo "benchmark_vm_ip=localhost" >> $GITHUB_OUTPUT
+
+  run-diagnostic:
+    name: Run Diagnostic Investigation
+    needs: setup-infrastructure
+    runs-on: ubuntu-latest
+    if: contains(fromJSON('["diagnostic", "full"]'), github.event.inputs.investigation_type || 'full')
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install Dependencies
+        run: |
+          pip install aiohttp psutil tabulate
+          
+      - name: Apply System Optimizations
+        run: |
+          # Apply basic optimizations on runner
+          sudo sysctl -w net.core.somaxconn=65535
+          sudo sysctl -w net.ipv4.tcp_max_syn_backlog=65535
+          ulimit -n 65536
+      
+      - name: Wait for Reframe Server
+        run: |
+          REFRAME_URL="${{ needs.setup-infrastructure.outputs.reframe_url }}"
+          echo "Waiting for Reframe at $REFRAME_URL..."
+          
+          for i in {1..60}; do
+            if curl -f "${REFRAME_URL}/health" 2>/dev/null; then
+              echo "Reframe is ready!"
+              break
+            fi
+            echo "Waiting... ($i/60)"
+            sleep 5
+          done
+      
+      - name: Run Performance Diagnostics
+        id: diagnostic
+        run: |
+          REFRAME_URL="${{ needs.setup-infrastructure.outputs.reframe_url }}"
+          
+          echo "Running diagnostic investigation..."
+          python3 products/reframe/benchmark/diagnose_performance.py \
+            --base-url "$REFRAME_URL" \
+            2>&1 | tee diagnostic_output.log
+          
+          # Extract key metrics
+          if grep -q "ISSUES FOUND" diagnostic_output.log; then
+            echo "has_issues=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_issues=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Upload Diagnostic Results
+        uses: actions/upload-artifact@v3
+        with:
+          name: diagnostic-results-${{ github.run_id }}
+          path: |
+            diagnostic_output.log
+            diagnosis_*.json
+
+  run-degradation-analysis:
+    name: Run Degradation Analysis
+    needs: setup-infrastructure
+    runs-on: ubuntu-latest
+    if: contains(fromJSON('["degradation", "full"]'), github.event.inputs.investigation_type || 'full')
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install Dependencies
+        run: |
+          pip install aiohttp psutil tabulate
+      
+      - name: Run Degradation Investigation
+        id: degradation
+        run: |
+          REFRAME_URL="${{ needs.setup-infrastructure.outputs.reframe_url }}"
+          NUM_WAVES="${{ github.event.inputs.num_waves || '10' }}"
+          
+          echo "Running degradation analysis with $NUM_WAVES waves..."
+          python3 products/reframe/benchmark/investigate_degradation.py \
+            --base-url "$REFRAME_URL" \
+            --waves "$NUM_WAVES" \
+            2>&1 | tee degradation_output.log
+          
+          # Check for degradation
+          if grep -q "Significant throughput degradation detected" degradation_output.log; then
+            echo "degradation_detected=true" >> $GITHUB_OUTPUT
+            DEGRADATION_PCT=$(grep "Throughput degradation:" degradation_output.log | grep -oE '[0-9]+\.[0-9]+%' | head -1)
+            echo "degradation_pct=${DEGRADATION_PCT}" >> $GITHUB_OUTPUT
+          else
+            echo "degradation_detected=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Upload Degradation Results
+        uses: actions/upload-artifact@v3
+        with:
+          name: degradation-results-${{ github.run_id }}
+          path: |
+            degradation_output.log
+            degradation_analysis_*.json
+
+  run-comparison:
+    name: Compare Original vs Fixed
+    needs: setup-infrastructure
+    runs-on: ubuntu-latest
+    if: contains(fromJSON('["comparison", "full"]'), github.event.inputs.investigation_type || 'full')
+    
+    strategy:
+      matrix:
+        benchmark_type: [original, optimized, fixed]
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install Dependencies
+        run: |
+          pip install aiohttp psutil tabulate
+      
+      - name: Run ${{ matrix.benchmark_type }} Benchmark
+        run: |
+          REFRAME_URL="${{ needs.setup-infrastructure.outputs.reframe_url }}"
+          VM_SIZE="${{ github.event.inputs.vm_size || '8-core' }}"
+          NUM_REQUESTS="${{ github.event.inputs.num_requests || '50000' }}"
+          
+          case "${{ matrix.benchmark_type }}" in
+            original)
+              SCRIPT="enhanced_benchmark.py"
+              ;;
+            optimized)
+              SCRIPT="optimized_benchmark.py"
+              ;;
+            fixed)
+              SCRIPT="fixed_benchmark.py"
+              ;;
+          esac
+          
+          echo "Running ${{ matrix.benchmark_type }} benchmark..."
+          python3 products/reframe/benchmark/${SCRIPT} \
+            --base-url "$REFRAME_URL" \
+            --vm-size "$VM_SIZE" \
+            --num-requests "$NUM_REQUESTS" \
+            --output-dir "results/${{ matrix.benchmark_type }}" \
+            2>&1 | tee ${{ matrix.benchmark_type }}_output.log
+      
+      - name: Upload ${{ matrix.benchmark_type }} Results
+        uses: actions/upload-artifact@v3
+        with:
+          name: comparison-${{ matrix.benchmark_type }}-${{ github.run_id }}
+          path: |
+            ${{ matrix.benchmark_type }}_output.log
+            results/${{ matrix.benchmark_type }}/**
+
+  analyze-results:
+    name: Analyze and Report
+    needs: [run-diagnostic, run-degradation-analysis, run-comparison]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: artifacts
+      
+      - name: Generate Performance Report
+        id: report
+        run: |
+          echo "# Performance Investigation Report" > report.md
+          echo "**Date:** $(date)" >> report.md
+          echo "**Run ID:** ${{ github.run_id }}" >> report.md
+          echo "**VM Size:** ${{ github.event.inputs.vm_size || '8-core' }}" >> report.md
+          echo "" >> report.md
+          
+          # Diagnostic Results
+          if [ -f "artifacts/diagnostic-results-${{ github.run_id }}/diagnostic_output.log" ]; then
+            echo "## 🔍 Diagnostic Results" >> report.md
+            
+            if grep -q "ISSUES FOUND" artifacts/diagnostic-results-*/diagnostic_output.log; then
+              echo "### ⚠️ Issues Detected:" >> report.md
+              grep -A 20 "ISSUES FOUND" artifacts/diagnostic-results-*/diagnostic_output.log >> report.md
+            else
+              echo "### ✅ No Issues Found" >> report.md
+            fi
+            echo "" >> report.md
+          fi
+          
+          # Degradation Results
+          if [ -f "artifacts/degradation-results-${{ github.run_id }}/degradation_output.log" ]; then
+            echo "## 📉 Degradation Analysis" >> report.md
+            
+            if grep -q "Significant throughput degradation detected" artifacts/degradation-results-*/degradation_output.log; then
+              echo "### ❌ Degradation Detected" >> report.md
+              grep "Throughput degradation:" artifacts/degradation-results-*/degradation_output.log >> report.md
+              grep "P99 Latency increase:" artifacts/degradation-results-*/degradation_output.log >> report.md
+            else
+              echo "### ✅ No Significant Degradation" >> report.md
+            fi
+            echo "" >> report.md
+          fi
+          
+          # Comparison Results
+          if ls artifacts/comparison-*/; then
+            echo "## 📊 Benchmark Comparison" >> report.md
+            echo "| Type | Throughput | P99 Latency | Status |" >> report.md
+            echo "|------|------------|-------------|--------|" >> report.md
+            
+            for type in original optimized fixed; do
+              if [ -f "artifacts/comparison-${type}-*/​${type}_output.log" ]; then
+                THROUGHPUT=$(grep "Throughput:" artifacts/comparison-${type}-*/*.log | head -1 | grep -oE '[0-9]+\.[0-9]+ req/s' || echo "N/A")
+                LATENCY=$(grep "P99:" artifacts/comparison-${type}-*/*.log | head -1 | grep -oE '[0-9]+\.[0-9]+ ms' || echo "N/A")
+                echo "| ${type} | ${THROUGHPUT} | ${LATENCY} | ✓ |" >> report.md
+              fi
+            done
+            echo "" >> report.md
+          fi
+          
+          # Summary
+          echo "## 📋 Summary" >> report.md
+          
+          if [[ "${{ needs.run-degradation-analysis.outputs.degradation_detected }}" == "true" ]]; then
+            echo "- ❌ **Performance degradation detected**" >> report.md
+            echo "- Degradation: ${{ needs.run-degradation-analysis.outputs.degradation_pct }}" >> report.md
+            echo "- Action required: Review connection management" >> report.md
+          else
+            echo "- ✅ **Performance is stable**" >> report.md
+          fi
+          
+          if [[ "${{ needs.run-diagnostic.outputs.has_issues }}" == "true" ]]; then
+            echo "- ⚠️ **Configuration issues found**" >> report.md
+            echo "- Action required: Review server configuration" >> report.md
+          fi
+          
+          cat report.md
+      
+      - name: Post Report as Comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('report.md', 'utf8');
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: report
+            });
+      
+      - name: Upload Final Report
+        uses: actions/upload-artifact@v3
+        with:
+          name: performance-report-${{ github.run_id }}
+          path: report.md
+      
+      - name: Store in Azure Storage
+        if: success()
+        uses: azure/CLI@v1
+        with:
+          inlineScript: |
+            # Create storage container if not exists
+            az storage container create \
+              --name ${{ env.RESULTS_CONTAINER }} \
+              --account-name ${{ secrets.AZURE_STORAGE_ACCOUNT }} \
+              --auth-mode key \
+              --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
+              --public-access off
+            
+            # Upload report
+            TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+            az storage blob upload \
+              --container-name ${{ env.RESULTS_CONTAINER }} \
+              --name "reports/${TIMESTAMP}_investigation_${{ github.run_id }}.md" \
+              --file report.md \
+              --account-name ${{ secrets.AZURE_STORAGE_ACCOUNT }} \
+              --account-key ${{ secrets.AZURE_STORAGE_KEY }}
+
+  cleanup:
+    name: Cleanup Resources
+    needs: [analyze-results]
+    runs-on: ubuntu-latest
+    if: always() && github.event.inputs.reframe_url == ''
+    
+    steps:
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      - name: Delete VMs
+        run: |
+          # Delete VMs created for this run
+          az vm delete \
+            --resource-group $AZURE_RESOURCE_GROUP \
+            --name "vm-reframe-${GITHUB_RUN_ID}" \
+            --yes --no-wait
+          
+          az vm delete \
+            --resource-group $AZURE_RESOURCE_GROUP \
+            --name "vm-benchmark-${GITHUB_RUN_ID}" \
+            --yes --no-wait
+      
+      - name: Create Issue if Degradation Detected
+        if: needs.run-degradation-analysis.outputs.degradation_detected == 'true'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const title = `Performance Degradation Detected - Run #${context.runId}`;
+            const body = `
+            ## ⚠️ Performance Degradation Detected
+            
+            **Run ID:** ${context.runId}
+            **VM Size:** ${{ github.event.inputs.vm_size || '8-core' }}
+            **Degradation:** ${{ needs.run-degradation-analysis.outputs.degradation_pct }}
+            
+            ### Action Required
+            1. Review the [workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})
+            2. Check connection management in benchmark scripts
+            3. Review server configuration
+            
+            ### Artifacts
+            - [Diagnostic Results](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})
+            - [Degradation Analysis](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})
+            
+            cc: @team-performance
+            `;
+            
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: title,
+              body: body,
+              labels: ['performance', 'investigation', 'automated']
+            });

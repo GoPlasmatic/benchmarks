@@ -1,0 +1,381 @@
+name: Continuous Performance Monitoring
+
+on:
+  schedule:
+    # Run every 6 hours
+    - cron: '0 */6 * * *'
+  
+  push:
+    branches: [main]
+    paths:
+      - 'products/reframe/**'
+  
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - 'products/reframe/**'
+
+env:
+  ALERT_THRESHOLD_DEGRADATION: 20  # Alert if degradation > 20%
+  ALERT_THRESHOLD_LATENCY: 500     # Alert if P99 > 500ms
+  ALERT_THRESHOLD_SUCCESS: 95      # Alert if success rate < 95%
+
+jobs:
+  quick-performance-check:
+    name: Quick Performance Check
+    runs-on: ubuntu-latest
+    outputs:
+      needs_investigation: ${{ steps.check.outputs.needs_investigation }}
+      metrics: ${{ steps.check.outputs.metrics }}
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install Dependencies
+        run: |
+          pip install aiohttp psutil tabulate
+      
+      - name: Start Local Reframe Mock
+        run: |
+          # Start a mock server for quick testing
+          cat > mock_server.py << 'EOF'
+          from aiohttp import web
+          import random
+          import asyncio
+          
+          async def health(request):
+              return web.json_response({
+                  'status': 'healthy',
+                  'engines': {
+                      'forward': 'healthy (threaded, 8 workers)',
+                      'reverse': 'healthy (threaded, 8 workers)'
+                  }
+              })
+          
+          async def transform(request):
+              # Simulate processing time
+              await asyncio.sleep(random.uniform(0.01, 0.05))
+              return web.json_response({
+                  'result': '<?xml version="1.0"?><Document></Document>',
+                  'status': 'success'
+              })
+          
+          async def generate_sample(request):
+              return web.json_response({
+                  'result': '{1:F01BANKBEBBAXXX0237205215}{4::20:TEST-}',
+                  'status': 'success'
+              })
+          
+          app = web.Application()
+          app.router.add_get('/health', health)
+          app.router.add_post('/transform/mt-to-mx', transform)
+          app.router.add_post('/generate/sample', generate_sample)
+          
+          if __name__ == '__main__':
+              web.run_app(app, port=3000)
+          EOF
+          
+          python mock_server.py &
+          sleep 5
+      
+      - name: Run Quick Performance Check
+        id: check
+        run: |
+          # Run a quick benchmark
+          python3 products/reframe/benchmark/fixed_benchmark.py \
+            --base-url http://localhost:3000 \
+            --vm-size 2-core \
+            --num-requests 1000 \
+            --concurrent 16 \
+            --output-dir quick-check \
+            2>&1 | tee quick_check.log
+          
+          # Extract metrics
+          THROUGHPUT=$(grep "Overall Throughput:" quick_check.log | grep -oE '[0-9]+\.[0-9]+' | head -1 || echo "0")
+          P99_LATENCY=$(grep "Overall P99 Latency:" quick_check.log | grep -oE '[0-9]+\.[0-9]+' | head -1 || echo "0")
+          DEGRADATION=$(grep "Degradation:" quick_check.log | grep -oE '[0-9]+\.[0-9]+' | head -1 || echo "0")
+          
+          echo "metrics={\"throughput\":${THROUGHPUT},\"p99_latency\":${P99_LATENCY},\"degradation\":${DEGRADATION}}" >> $GITHUB_OUTPUT
+          
+          # Check if detailed investigation is needed
+          NEEDS_INVESTIGATION="false"
+          
+          if (( $(echo "$DEGRADATION > ${{ env.ALERT_THRESHOLD_DEGRADATION }}" | bc -l) )); then
+            echo "⚠️ Degradation threshold exceeded: ${DEGRADATION}%"
+            NEEDS_INVESTIGATION="true"
+          fi
+          
+          if (( $(echo "$P99_LATENCY > ${{ env.ALERT_THRESHOLD_LATENCY }}" | bc -l) )); then
+            echo "⚠️ Latency threshold exceeded: ${P99_LATENCY}ms"
+            NEEDS_INVESTIGATION="true"
+          fi
+          
+          echo "needs_investigation=${NEEDS_INVESTIGATION}" >> $GITHUB_OUTPUT
+      
+      - name: Upload Quick Check Results
+        uses: actions/upload-artifact@v3
+        with:
+          name: quick-check-${{ github.run_id }}
+          path: |
+            quick_check.log
+            quick-check/**
+
+  trigger-full-investigation:
+    name: Trigger Full Investigation
+    needs: quick-performance-check
+    if: needs.quick-performance-check.outputs.needs_investigation == 'true'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Trigger Investigation Workflow
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'investigate-performance.yml',
+              ref: context.ref,
+              inputs: {
+                vm_size: '8-core',
+                investigation_type: 'full',
+                num_waves: '10',
+                num_requests: '50000'
+              }
+            });
+            
+            console.log('Full investigation triggered due to performance concerns');
+
+  performance-regression-check:
+    name: Performance Regression Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install Dependencies
+        run: |
+          pip install aiohttp psutil tabulate
+      
+      - name: Get Base Branch Performance
+        run: |
+          # Checkout base branch
+          git checkout ${{ github.base_ref }}
+          
+          # Run baseline benchmark
+          python3 products/reframe/benchmark/fixed_benchmark.py \
+            --base-url http://localhost:3000 \
+            --vm-size 2-core \
+            --num-requests 1000 \
+            --concurrent 16 \
+            --output-dir baseline \
+            2>&1 | tee baseline.log
+          
+          BASELINE_THROUGHPUT=$(grep "Overall Throughput:" baseline.log | grep -oE '[0-9]+\.[0-9]+' | head -1 || echo "0")
+          echo "BASELINE_THROUGHPUT=${BASELINE_THROUGHPUT}" >> $GITHUB_ENV
+      
+      - name: Get PR Performance
+        run: |
+          # Checkout PR branch
+          git checkout ${{ github.head_ref }}
+          
+          # Run PR benchmark
+          python3 products/reframe/benchmark/fixed_benchmark.py \
+            --base-url http://localhost:3000 \
+            --vm-size 2-core \
+            --num-requests 1000 \
+            --concurrent 16 \
+            --output-dir pr-test \
+            2>&1 | tee pr_test.log
+          
+          PR_THROUGHPUT=$(grep "Overall Throughput:" pr_test.log | grep -oE '[0-9]+\.[0-9]+' | head -1 || echo "0")
+          echo "PR_THROUGHPUT=${PR_THROUGHPUT}" >> $GITHUB_ENV
+      
+      - name: Compare Performance
+        id: compare
+        run: |
+          REGRESSION_PCT=$(echo "scale=2; (($BASELINE_THROUGHPUT - $PR_THROUGHPUT) / $BASELINE_THROUGHPUT) * 100" | bc)
+          
+          echo "## Performance Comparison" > comparison.md
+          echo "| Metric | Base Branch | PR Branch | Change |" >> comparison.md
+          echo "|--------|-------------|-----------|--------|" >> comparison.md
+          echo "| Throughput | ${BASELINE_THROUGHPUT} req/s | ${PR_THROUGHPUT} req/s | ${REGRESSION_PCT}% |" >> comparison.md
+          
+          if (( $(echo "$REGRESSION_PCT > 10" | bc -l) )); then
+            echo "⚠️ **Performance regression detected!**" >> comparison.md
+            echo "regression_detected=true" >> $GITHUB_OUTPUT
+          else
+            echo "✅ **No significant performance regression**" >> comparison.md
+            echo "regression_detected=false" >> $GITHUB_OUTPUT
+          fi
+          
+          cat comparison.md
+      
+      - name: Post PR Comment
+        if: always()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const comparison = fs.readFileSync('comparison.md', 'utf8');
+            
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comparison
+            });
+
+  performance-dashboard:
+    name: Update Performance Dashboard
+    needs: [quick-performance-check]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'push'
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Update Metrics
+        run: |
+          # Create or update performance metrics file
+          METRICS='${{ needs.quick-performance-check.outputs.metrics }}'
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          
+          mkdir -p .metrics
+          
+          # Append to metrics history
+          echo "{\"timestamp\":\"${TIMESTAMP}\",\"metrics\":${METRICS}}" >> .metrics/history.jsonl
+          
+          # Update latest metrics
+          echo "${METRICS}" > .metrics/latest.json
+          
+          # Generate dashboard markdown
+          cat > PERFORMANCE.md << 'EOF'
+          # Performance Dashboard
+          
+          Last Updated: ${TIMESTAMP}
+          
+          ## Current Performance
+          
+          | Metric | Value | Status |
+          |--------|-------|--------|
+          | Throughput | $(echo $METRICS | jq -r .throughput) req/s | $([ $(echo $METRICS | jq -r .throughput) -gt 500 ] && echo "✅" || echo "⚠️") |
+          | P99 Latency | $(echo $METRICS | jq -r .p99_latency) ms | $([ $(echo $METRICS | jq -r .p99_latency) -lt 200 ] && echo "✅" || echo "⚠️") |
+          | Degradation | $(echo $METRICS | jq -r .degradation)% | $([ $(echo $METRICS | jq -r .degradation) -lt 10 ] && echo "✅" || echo "⚠️") |
+          
+          ## Trend
+          
+          See [metrics history](.metrics/history.jsonl) for detailed trend analysis.
+          
+          ## Automated Monitoring
+          
+          - Performance checks run every 6 hours
+          - Full investigation triggered on threshold violations
+          - PR checks prevent performance regressions
+          
+          EOF
+      
+      - name: Commit Metrics
+        if: github.event_name == 'schedule'
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add .metrics PERFORMANCE.md
+          git commit -m "Update performance metrics [skip ci]" || true
+          git push
+
+  alert-on-degradation:
+    name: Alert on Degradation
+    needs: [quick-performance-check]
+    runs-on: ubuntu-latest
+    if: needs.quick-performance-check.outputs.needs_investigation == 'true'
+    
+    steps:
+      - name: Send Slack Alert
+        if: env.SLACK_WEBHOOK_URL != ''
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          METRICS='${{ needs.quick-performance-check.outputs.metrics }}'
+          
+          curl -X POST $SLACK_WEBHOOK_URL \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"text\": \"⚠️ Performance Degradation Alert\",
+              \"blocks\": [
+                {
+                  \"type\": \"section\",
+                  \"text\": {
+                    \"type\": \"mrkdwn\",
+                    \"text\": \"*Performance issues detected in benchmark*\"
+                  }
+                },
+                {
+                  \"type\": \"section\",
+                  \"fields\": [
+                    {
+                      \"type\": \"mrkdwn\",
+                      \"text\": \"*Throughput:*\n$(echo $METRICS | jq -r .throughput) req/s\"
+                    },
+                    {
+                      \"type\": \"mrkdwn\",
+                      \"text\": \"*P99 Latency:*\n$(echo $METRICS | jq -r .p99_latency) ms\"
+                    },
+                    {
+                      \"type\": \"mrkdwn\",
+                      \"text\": \"*Degradation:*\n$(echo $METRICS | jq -r .degradation)%\"
+                    },
+                    {
+                      \"type\": \"mrkdwn\",
+                      \"text\": \"*Action:*\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Details>\"
+                    }
+                  ]
+                }
+              ]
+            }"
+      
+      - name: Create GitHub Issue
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const metrics = JSON.parse('${{ needs.quick-performance-check.outputs.metrics }}');
+            
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Performance Alert - ${new Date().toISOString().split('T')[0]}`,
+              body: `
+              ## ⚠️ Performance Degradation Detected
+              
+              ### Metrics
+              - **Throughput:** ${metrics.throughput} req/s
+              - **P99 Latency:** ${metrics.p99_latency} ms
+              - **Degradation:** ${metrics.degradation}%
+              
+              ### Automated Actions
+              - Full investigation workflow has been triggered
+              - Results will be available in ~30 minutes
+              
+              ### Manual Actions Required
+              1. Review the [investigation results](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions)
+              2. Check recent commits for performance-impacting changes
+              3. Review server logs for errors or resource issues
+              
+              cc: @team-performance
+              `,
+              labels: ['performance', 'alert', 'automated', 'priority-high']
+            });
