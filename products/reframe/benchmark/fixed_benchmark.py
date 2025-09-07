@@ -16,6 +16,11 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import signal
 import resource
+import os
+
+# Enable debug output
+if os.getenv('PYTHONUNBUFFERED'):
+    print("Debug mode enabled", flush=True)
 
 class FixedBenchmark:
     """Benchmark with proper resource management to prevent degradation"""
@@ -62,25 +67,43 @@ class FixedBenchmark:
     
     async def get_sample_message(self) -> dict:
         """Get sample message with minimal session"""
-        session = await self.create_limited_session(1)
-        try:
-            async with session.post(
-                f"{self.base_url}/generate/sample",
-                json={"message_type": "MT103", "config": {"scenario": "standard"}}
-            ) as resp:
-                if resp.status == 200:
-                    result = await resp.json()
-                    return {
-                        "message": result.get("result", result.get("message", "")),
-                        "options": {"validation": False}
-                    }
-        except:
-            pass
-        finally:
-            await session.close()
-            await asyncio.sleep(0.1)  # Let connections close
+        print("Getting sample message...")
         
-        # Fallback
+        # Try to get from API with short timeout
+        try:
+            # Use wait_for for Python 3.9+ compatibility
+            async def fetch_sample():
+                session = await self.create_limited_session(1)
+                try:
+                    async with session.post(
+                        f"{self.base_url}/generate/sample",
+                        json={"message_type": "MT103", "config": {"scenario": "standard"}}
+                    ) as resp:
+                        if resp.status == 200:
+                            result = await resp.json()
+                            message = result.get("result", result.get("message", ""))
+                            if message:
+                                print("Using generated sample message")
+                                return {
+                                    "message": message,
+                                    "options": {"validation": False}
+                                }
+                except Exception as e:
+                    print(f"Failed to get sample: {e}")
+                finally:
+                    await session.close()
+                return None
+            
+            result = await asyncio.wait_for(fetch_sample(), timeout=5.0)
+            if result:
+                return result
+        except asyncio.TimeoutError:
+            print("Sample message request timed out, using fallback")
+        except Exception as e:
+            print(f"Error getting sample: {e}")
+        
+        # Fallback message
+        print("Using fallback MT103 message")
         return {
             "message": "{1:F01BANKBEBBAXXX0237205215}{2:O103080907BANKFRPPAXXX02372052150809070917N}{3:{108:ILOVESEPA}}{4:\n:20:REF12345678901234\n:23B:CRED\n:32A:240101EUR1000,00\n:50K:/12345678901234567890\nJOHN DOE\n123 MAIN STREET\nANYTOWN\n:59:/98765432109876543210\nJANE SMITH\n456 PARK AVENUE\nOTHERCITY\n:71A:SHA\n-}",
             "options": {"validation": False}
@@ -200,16 +223,43 @@ class FixedBenchmark:
         print(f"Max Concurrent Tasks: {max_concurrent_tasks}")
         print(f"Concurrent Requests: {concurrent}")
         print(f"Total Requests: {total_requests}")
+        print(f"Base URL: {self.base_url}")
+        print()
+        
+        # Test connectivity first
+        print("Testing connectivity...")
+        try:
+            async def test_health():
+                connector = aiohttp.TCPConnector(limit=1)
+                async with aiohttp.ClientSession(connector=connector) as session:
+                    async with session.get(f"{self.base_url}/health") as resp:
+                        if resp.status == 200:
+                            print("✓ Server is reachable")
+                            return True
+                        else:
+                            print(f"⚠ Server returned status {resp.status}")
+                            return False
+            
+            await asyncio.wait_for(test_health(), timeout=10.0)
+        except asyncio.TimeoutError:
+            print("✗ Server health check timed out")
+            return None
+        except Exception as e:
+            print(f"✗ Cannot reach server: {e}")
+            return None
         
         # Get sample data
+        print("\nPreparing test data...")
         data = await self.get_sample_message()
+        print(f"Message size: {len(data['message'])} bytes")
         
         # Divide into batches to prevent degradation
-        batch_size = 5000  # Smaller batches to prevent resource accumulation
+        batch_size = min(5000, total_requests)  # Smaller batches to prevent resource accumulation
         num_batches = (total_requests + batch_size - 1) // batch_size
         
-        print(f"\nDividing into {num_batches} batches of {batch_size} requests")
+        print(f"\nDividing into {num_batches} batches of up to {batch_size} requests each")
         print("This prevents connection/memory accumulation")
+        print()
         
         all_results = []
         cumulative_time = 0

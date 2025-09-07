@@ -127,15 +127,26 @@ jobs:
           fi
       
       - name: Test Fixed Benchmark
+        timeout-minutes: 5
         run: |
-          echo "Running fixed benchmark..."
-          python3 products/reframe/benchmark/fixed_benchmark.py \
+          echo "Running fixed benchmark with timeout..."
+          
+          # Add debug output
+          export PYTHONUNBUFFERED=1
+          
+          # Run with timeout command as backup
+          timeout 300 python3 products/reframe/benchmark/fixed_benchmark.py \
             --base-url http://localhost:3000 \
             --vm-size 2-core \
             --num-requests 1000 \
             --concurrent 16 \
             --output-dir test-results \
-            2>&1 | tee fixed_benchmark.log
+            2>&1 | tee fixed_benchmark.log || {
+              echo "Benchmark timed out or failed"
+              echo "Last 50 lines of output:"
+              tail -50 fixed_benchmark.log
+              exit 1
+            }
           
           # Extract metrics
           THROUGHPUT=$(grep "Overall Throughput:" fixed_benchmark.log | grep -oE '[0-9]+\.[0-9]+' | head -1 || echo "0")
