@@ -293,6 +293,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+        continue-on-error: true
+      
       - name: Download All Artifacts
         uses: actions/download-artifact@v4
         with:
@@ -393,38 +399,61 @@ jobs:
         if: success()
         uses: azure/CLI@v2
         with:
+          azcliversion: latest
           inlineScript: |
-            # Get storage account from resource group
-            STORAGE_ACCOUNT=$(az storage account list -g ${{ env.AZURE_RESOURCE_GROUP }} --query "[0].name" -o tsv)
+            # Check if we're logged in
+            if ! az account show &>/dev/null; then
+              echo "⚠️ Not logged into Azure. Skipping storage upload."
+              echo "   To enable storage, ensure AZURE_CREDENTIALS secret is configured."
+              exit 0
+            fi
+            
+            # Ensure resource group exists
+            if ! az group exists -n ${{ env.AZURE_RESOURCE_GROUP }}; then
+              echo "Creating resource group..."
+              az group create -n ${{ env.AZURE_RESOURCE_GROUP }} -l ${{ env.AZURE_LOCATION }}
+            fi
+            
+            # Get or create storage account
+            STORAGE_ACCOUNT=$(az storage account list -g ${{ env.AZURE_RESOURCE_GROUP }} --query "[0].name" -o tsv 2>/dev/null || echo "")
             
             if [ -z "$STORAGE_ACCOUNT" ]; then
               echo "Creating storage account..."
-              STORAGE_ACCOUNT="stbenchmark${GITHUB_RUN_ID:0:8}"
+              STORAGE_ACCOUNT="stbench$(echo $GITHUB_RUN_ID | tr -d '-' | cut -c1-16)"
               az storage account create \
                 --name "$STORAGE_ACCOUNT" \
                 --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
                 --location ${{ env.AZURE_LOCATION }} \
-                --sku Standard_LRS
+                --sku Standard_LRS \
+                --allow-blob-public-access false
             fi
             
-            # Create storage container if not exists
+            echo "Using storage account: $STORAGE_ACCOUNT"
+            
+            # Get storage account key
+            STORAGE_KEY=$(az storage account keys list \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --account-name "$STORAGE_ACCOUNT" \
+              --query "[0].value" -o tsv)
+            
+            # Create container with key auth
             az storage container create \
               --name ${{ env.RESULTS_CONTAINER }} \
               --account-name "$STORAGE_ACCOUNT" \
-              --auth-mode login \
+              --account-key "$STORAGE_KEY" \
               --public-access off 2>/dev/null || true
             
-            # Upload report
+            # Upload report with key auth
             TIMESTAMP=$(date +%Y%m%d_%H%M%S)
             az storage blob upload \
               --container-name ${{ env.RESULTS_CONTAINER }} \
               --name "reports/${TIMESTAMP}_investigation_${{ github.run_id }}.md" \
               --file report.md \
               --account-name "$STORAGE_ACCOUNT" \
-              --auth-mode login \
-              --overwrite true
+              --account-key "$STORAGE_KEY" \
+              --overwrite
             
-            echo "✅ Report uploaded to storage account: $STORAGE_ACCOUNT"
+            echo "✅ Report uploaded to: https://${STORAGE_ACCOUNT}.blob.core.windows.net/${{ env.RESULTS_CONTAINER }}/reports/${TIMESTAMP}_investigation_${{ github.run_id }}.md"
 
   cleanup:
     name: Cleanup Resources
