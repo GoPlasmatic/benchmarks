@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Modified benchmark script for Azure VM execution
-Accepts environment variables for configuration
+Modified benchmark script that supports environment variables and outputs JSON
+Based on simple_benchmark.py from Reframe
 """
 
 import asyncio
@@ -49,16 +49,13 @@ async def run_test(num_requests=100, concurrent=8):
     
     async with aiohttp.ClientSession() as session:
         # Get sample message
-        print(f"Getting sample message from {base_url}...")
         data = await get_sample_message(session)
         
         # Warmup
         warmup_count = int(os.environ.get('BENCHMARK_WARMUP', '10'))
-        print(f"Warming up with {warmup_count} requests...")
         for _ in range(warmup_count):
             await make_request(session, url, data)
         
-        print(f"Running {num_requests} requests with {concurrent} concurrent tasks...")
         start_time = time.perf_counter()
         
         latencies = []
@@ -119,14 +116,14 @@ async def run_test(num_requests=100, concurrent=8):
         }
 
 async def main():
-    """Run benchmark tests based on environment configuration"""
+    """Test different concurrency levels based on environment configuration"""
     print("Reframe Performance Benchmark")
     print("="*50)
     
     # Get configuration from environment
     base_url = os.environ.get('REFRAME_URL', 'http://localhost:3000')
     num_requests = int(os.environ.get('BENCHMARK_REQUESTS', '100000'))
-    benchmark_configs = os.environ.get('BENCHMARK_CONFIGS', '8,32,128,256')
+    benchmark_configs = os.environ.get('BENCHMARK_CONFIGS', '8,32,128')
     
     print(f"Target URL: {base_url}")
     print(f"Total requests per test: {num_requests}")
@@ -168,25 +165,14 @@ async def main():
     print("\n" + "="*50)
     print("BENCHMARK SUMMARY")
     print("="*50)
-    print(f"{'Config':<15} {'Throughput':<12} {'Success':<10} {'p50':<8} {'p95':<8} {'p99':<8} {'p99.9':<8}")
-    print(f"{'              ':<15} {'(req/s)':<12} {'(%)':<10} {'(ms)':<8} {'(ms)':<8} {'(ms)':<8} {'(ms)':<8}")
-    print("-"*75)
-    
-    for stats in results:
-        print(f"{stats['configuration']:<15} "
-              f"{stats['throughput']:<12.1f} "
-              f"{stats['success_rate']:<10.1f} "
-              f"{stats['latency']['p50']:<8.1f} "
-              f"{stats['latency']['p95']:<8.1f} "
-              f"{stats['latency']['p99']:<8.1f} "
-              f"{stats['latency']['p99.9']:<8.1f}")
     
     # Find best configurations
-    best_throughput = max(results, key=lambda x: x['throughput'])
-    best_latency = min(results, key=lambda x: x['latency']['p99'])
-    
-    print(f"\nBest throughput: {best_throughput['configuration']} with {best_throughput['throughput']:.1f} req/s")
-    print(f"Best p99 latency: {best_latency['configuration']} with {best_latency['latency']['p99']:.1f} ms")
+    if results:
+        best_throughput = max(results, key=lambda x: x['throughput'])
+        best_latency = min(results, key=lambda x: x['latency']['p99'])
+        
+        print(f"Best throughput: {best_throughput['configuration']} with {best_throughput['throughput']:.1f} req/s")
+        print(f"Best p99 latency: {best_latency['configuration']} with {best_latency['latency']['p99']:.1f} ms")
     
     # Output JSON results
     output = {
@@ -197,7 +183,11 @@ async def main():
             'concurrency_levels': concurrency_levels
         },
         'results': results,
-        'summary': {
+        'summary': {}
+    }
+    
+    if results:
+        output['summary'] = {
             'best_throughput': {
                 'configuration': best_throughput['configuration'],
                 'value': best_throughput['throughput']
@@ -207,7 +197,6 @@ async def main():
                 'value': best_latency['latency']['p99']
             }
         }
-    }
     
     # Write to stdout as JSON for collection
     print("\n\nJSON_OUTPUT_START")

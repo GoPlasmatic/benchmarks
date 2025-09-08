@@ -45,11 +45,11 @@ packages:
   - jq
 
 write_files:
-  - path: /opt/benchmark/run-benchmark.py
+  - path: /opt/benchmark/benchmark.py
     permissions: '0755'
     owner: root:root
     content: |
-$(cat ./scripts/run-benchmark.py | sed 's/^/      /')
+$(cat ./scripts/benchmark.py | sed 's/^/      /')
   - path: /opt/reframe/docker-compose.yml
     content: |
       version: '3.8'
@@ -89,8 +89,8 @@ $(cat ./scripts/run-benchmark.py | sed 's/^/      /')
           profiles:
             - benchmark
           volumes:
-            - /opt/benchmark/run-benchmark.py:/app/run-benchmark.py:ro
-          command: sh -c "pip install --no-cache-dir aiohttp && python3 /app/run-benchmark.py"
+            - /opt/benchmark/benchmark.py:/app/benchmark.py:ro
+          command: sh -c "pip install --no-cache-dir aiohttp && python3 /app/benchmark.py"
       
       networks:
         reframe-network:
