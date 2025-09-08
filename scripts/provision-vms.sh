@@ -45,6 +45,10 @@ packages:
   - jq
 
 write_files:
+  - path: /opt/benchmark/scripts/run-benchmark.py
+    permissions: '0755'
+    content: |
+$(cat ./scripts/run-benchmark.py | sed 's/^/      /')
   - path: /opt/reframe/docker-compose.yml
     content: |
       version: '3.8'
@@ -84,7 +88,8 @@ write_files:
             - benchmark
           volumes:
             - /opt/benchmark/results:/app/results
-          command: sh -c "python3 /app/test/simple_benchmark.py > /app/results/output.json 2>&1"
+            - /opt/benchmark/scripts:/app/scripts
+          command: python3 /app/scripts/run-benchmark.py
       
       networks:
         reframe-network:
@@ -95,6 +100,7 @@ runcmd:
   - systemctl enable docker
   - docker login ${ACR_URL} -u ${ACR_USERNAME} -p ${ACR_PASSWORD}
   - mkdir -p /opt/benchmark/results
+  - mkdir -p /opt/benchmark/scripts
   - cd /opt/reframe && docker-compose pull
   - cd /opt/reframe && docker-compose up -d reframe-app
 EOF
