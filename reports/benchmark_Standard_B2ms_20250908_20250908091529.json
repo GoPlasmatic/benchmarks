@@ -1,0 +1,76 @@
+{
+  "run_id": "20250908091529",
+  "timestamp": "2025-09-08T09:26:12Z",
+  "configuration": {
+    "target_vm_size": "Standard_B2ms",
+    "benchmark_vm_size": "Standard_B2s",
+    "reframe_version": "latest",
+    "reframe_thread_count": 2,
+    "reframe_max_concurrent_tasks": 8,
+    "benchmark_requests": 100000,
+    "benchmark_configs": "64,256"
+  },
+  "metrics": {
+    "cpu": {
+      "average": 53.860833333333325,
+      "peak": 95.03
+    }
+  },
+  "benchmark_results": {
+  "timestamp": "2025-09-08T09:25:27Z",
+  "configuration": {
+    "target_url": "http://reframe-app:3000",
+    "total_requests": 100000,
+    "concurrency_levels": [
+      64,
+      256
+    ]
+  },
+  "results": [
+    {
+      "configuration": "64 concurrent",
+      "total_requests": 100000,
+      "successful_requests": 100000,
+      "success_rate": 100.0,
+      "total_time": 136.155069501,
+      "throughput": 734.4566777167671,
+      "latency": {
+        "min": 4.594362999995383,
+        "avg": 45.057616864819614,
+        "p50": 44.69781899999248,
+        "p95": 79.0726829999926,
+        "p99": 84.58468899999616,
+        "p99.9": 113.2457609999733,
+        "max": 126.42494300001772
+      }
+    },
+    {
+      "configuration": "256 concurrent",
+      "total_requests": 100000,
+      "successful_requests": 100000,
+      "success_rate": 100.0,
+      "total_time": 143.520828989,
+      "throughput": 696.7629765270126,
+      "latency": {
+        "min": 14.631578999967587,
+        "avg": 186.35298102996077,
+        "p50": 187.2766050000223,
+        "p95": 331.9542609999644,
+        "p99": 349.0374040000006,
+        "p99.9": 373.0840340000441,
+        "max": 415.4366129999971
+      }
+    }
+  ],
+  "summary": {
+    "best_throughput": {
+      "configuration": "64 concurrent",
+      "value": 734.4566777167671
+    },
+    "best_p99_latency": {
+      "configuration": "64 concurrent",
+      "value": 84.58468899999616
+    }
+  }
+}
+}
