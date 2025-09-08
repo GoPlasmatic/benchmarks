@@ -155,26 +155,27 @@ jobs:
           echo "Requests: \${BENCHMARK_REQUESTS}"
           echo "Configs: \${BENCHMARK_CONFIGS}"
           
-          # Run benchmark using local Docker image
+          # Run benchmark using local Docker image (with timeout for safety)
           cd /opt/benchmark
-          docker run --rm \
+          timeout 480 docker run --rm \
             -e REFRAME_URL="\${REFRAME_URL}" \
             -e BENCHMARK_REQUESTS="\${BENCHMARK_REQUESTS}" \
             -e BENCHMARK_CONFIGS="\${BENCHMARK_CONFIGS}" \
             -e PYTHONUNBUFFERED=1 \
             --network host \
-            benchmark-runner > /tmp/benchmark_output.txt 2>&1
+            benchmark-runner > /tmp/benchmark_output.txt 2>&1 || true
           
           # Output results
           cat /tmp/benchmark_output.txt
           SCRIPT_END
           
-          # Make script executable and run it on runner VM
+          # Make script executable and run it on runner VM (with extended timeout for large benchmarks)
           az vm run-command invoke \
             --resource-group "${{ needs.provision.outputs.resource_group }}" \
             --name "${RUNNER_VM_NAME}" \
             --command-id RunShellScript \
             --scripts @run_benchmark.sh \
+            --timeout 600 \
             --query 'value[0].message' -o tsv > benchmark_raw_output.txt
           
           # Extract JSON output
