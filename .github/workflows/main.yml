@@ -141,6 +141,10 @@ jobs:
           
           echo "Starting benchmark on target VM using docker-compose..."
           
+          # Record start time for metrics collection
+          BENCHMARK_START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          echo "benchmark_start=${BENCHMARK_START}" >> $GITHUB_OUTPUT
+          
           # Run benchmark using docker-compose with environment variables
           az vm run-command invoke \
             --resource-group "${RESOURCE_GROUP}" \
@@ -151,6 +155,10 @@ jobs:
               BENCHMARK_CONFIGS='${{ inputs.benchmark_configs }}' \
               docker-compose --profile benchmark run --rm benchmark-runner" \
             --query 'value[0].message' -o tsv > benchmark_raw_output.txt
+          
+          # Record end time for metrics collection
+          BENCHMARK_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          echo "benchmark_end=${BENCHMARK_END}" >> $GITHUB_OUTPUT
           
           # Extract JSON output
           sed -n '/JSON_OUTPUT_START/,/JSON_OUTPUT_END/p' benchmark_raw_output.txt | sed '1d;$d' > benchmark_results.json
@@ -167,9 +175,14 @@ jobs:
           # Get subscription ID from Azure CLI
           SUBSCRIPTION_ID=$(az account show --query id -o tsv)
           
-          # Get CPU metrics for the last hour
-          END_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          START_TIME=$(date -u -d "1 hour ago" +"%Y-%m-%dT%H:%M:%SZ")
+          # Use benchmark execution time window for metrics
+          START_TIME="${{ steps.benchmark.outputs.benchmark_start }}"
+          END_TIME="${{ steps.benchmark.outputs.benchmark_end }}"
+          
+          echo "Collecting CPU metrics from ${START_TIME} to ${END_TIME}"
+          
+          # Wait a bit for metrics to be available in Azure Monitor
+          sleep 30
           
           az monitor metrics list \
             --resource "/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${{ needs.provision.outputs.resource_group }}/providers/Microsoft.Compute/virtualMachines/${TARGET_VM_NAME}" \
@@ -180,9 +193,16 @@ jobs:
             --aggregation Average Maximum \
             --output json > cpu_metrics.json || echo '{"value":[]}' > cpu_metrics.json
           
+          # Debug: Show raw metrics
+          echo "Raw metrics data:"
+          jq '.value[0].timeseries[0].data' cpu_metrics.json || echo "No metrics data"
+          
           # Extract average and peak CPU (with defaults if no data)
           AVG_CPU=$(jq 'if .value[0].timeseries[0].data then ([.value[0].timeseries[0].data[].average | select(. != null)] | if length > 0 then add/length else 0 end) else 0 end' cpu_metrics.json || echo "0")
           PEAK_CPU=$(jq 'if .value[0].timeseries[0].data then ([.value[0].timeseries[0].data[].maximum | select(. != null)] | if length > 0 then max else 0 end) else 0 end' cpu_metrics.json || echo "0")
+          
+          echo "Average CPU: ${AVG_CPU}%"
+          echo "Peak CPU: ${PEAK_CPU}%"
           
           echo "avg_cpu=${AVG_CPU}" >> $GITHUB_OUTPUT
           echo "peak_cpu=${PEAK_CPU}" >> $GITHUB_OUTPUT
