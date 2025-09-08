@@ -4,16 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       target_vm_size:
-        description: 'Target VM size for Reframe application'
+        description: 'Target VM size for Reframe application (e.g., Standard_B2s, Standard_D16s_v5)'
         required: true
         default: 'Standard_B2s'
-        type: choice
-        options:
-          - Standard_B2s
-          - Standard_B4ms
-          - Standard_B8ms
-          - Standard_D2s_v3
-          - Standard_D4s_v3
+        type: string
       benchmark_requests:
         description: 'Total number of requests'
         required: false
