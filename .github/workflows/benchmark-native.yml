@@ -1,0 +1,334 @@
+name: Native Benchmark Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_vm_size:
+        description: 'Target VM size for Reframe application'
+        required: true
+        default: 'Standard_B2s'
+        type: string
+      benchmark_requests:
+        description: 'Total number of requests'
+        required: false
+        default: '100000'
+        type: string
+      benchmark_configs:
+        description: 'Comma-separated concurrency levels to test'
+        required: false
+        default: '64,256,512,1024'
+        type: string
+      reframe_thread_count:
+        description: 'Reframe thread pool size'
+        required: false
+        default: '0'  # 0 means use all available cores
+        type: string
+      reframe_max_concurrent_tasks:
+        description: 'Reframe max concurrent tasks'
+        required: false
+        default: '0'  # 0 means unlimited
+        type: string
+      use_prebuilt:
+        description: 'Use pre-built Reframe binary from ACR'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  PROJECT_NAME: ${{ vars.PROJECT_NAME }}
+  AZURE_LOCATION: ${{ vars.AZURE_LOCATION || 'eastus' }}
+
+jobs:
+  provision:
+    name: Provision Native VM
+    runs-on: ubuntu-latest
+    outputs:
+      target_vm_ip: ${{ steps.provision.outputs.target_vm_ip }}
+      run_id: ${{ steps.provision.outputs.run_id }}
+      resource_group: ${{ steps.generate_id.outputs.resource_group }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      - name: Generate Run ID
+        id: generate_id
+        run: |
+          echo "run_id=$(date +%Y%m%d%H%M%S)" >> $GITHUB_OUTPUT
+          echo "resource_group=benchmark-native-rg-$(date +%Y%m%d%H%M%S)" >> $GITHUB_OUTPUT
+      
+      - name: Download Reframe Binary from ACR (if using prebuilt)
+        if: ${{ inputs.use_prebuilt }}
+        run: |
+          # This step would download the pre-built binary from ACR
+          # Implementation depends on how binaries are stored in ACR
+          echo "Downloading pre-built Reframe binary..."
+          # docker pull ${ACR_URL}/reframe:latest
+          # docker create --name temp ${ACR_URL}/reframe:latest
+          # docker cp temp:/app/reframe ./reframe-binary
+          # docker rm temp
+        env:
+          ACR_URL: ${{ secrets.ACR_URL }}
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+      
+      - name: Provision Native VM
+        id: provision
+        run: |
+          # Determine thread count based on VM size
+          VM_SIZE="${{ inputs.target_vm_size }}"
+          case $VM_SIZE in
+            *B2*) THREADS=2 ;;
+            *B4*) THREADS=4 ;;
+            *B8*) THREADS=8 ;;
+            *B16*) THREADS=16 ;;
+            *B20*) THREADS=20 ;;
+            *D2*) THREADS=2 ;;
+            *D4*) THREADS=4 ;;
+            *D8*) THREADS=8 ;;
+            *D16*) THREADS=16 ;;
+            *D32*) THREADS=32 ;;
+            *D48*) THREADS=48 ;;
+            *D64*) THREADS=64 ;;
+            *) THREADS=0 ;;  # Use all available
+          esac
+          
+          # Override if user specified
+          if [ "${{ inputs.reframe_thread_count }}" != "0" ]; then
+            THREADS="${{ inputs.reframe_thread_count }}"
+          fi
+          
+          export REFRAME_THREAD_COUNT=$THREADS
+          export REFRAME_MAX_CONCURRENT_TASKS="${{ inputs.reframe_max_concurrent_tasks }}"
+          
+          chmod +x ./scripts/provision-native-vm.sh
+          ./scripts/provision-native-vm.sh \
+            "${{ steps.generate_id.outputs.resource_group }}" \
+            "${{ env.AZURE_LOCATION }}" \
+            "${{ inputs.target_vm_size }}" \
+            "Standard_B2s" \
+            "${{ steps.generate_id.outputs.run_id }}"
+        env:
+          ACR_URL: ${{ secrets.ACR_URL }}
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+
+  deploy:
+    name: Wait for Native Reframe
+    runs-on: ubuntu-latest
+    needs: provision
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      - name: Wait for Reframe to be Ready
+        run: |
+          TARGET_VM_NAME="reframe-target-${{ needs.provision.outputs.run_id }}"
+          RESOURCE_GROUP="${{ needs.provision.outputs.resource_group }}"
+          echo "Waiting for native Reframe to be healthy on ${TARGET_VM_NAME}..."
+          
+          for i in {1..90}; do
+            HEALTH_CHECK=$(az vm run-command invoke \
+              --resource-group "${RESOURCE_GROUP}" \
+              --name "${TARGET_VM_NAME}" \
+              --command-id RunShellScript \
+              --scripts "curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/health" \
+              --query 'value[0].message' -o tsv 2>/dev/null || echo "")
+            
+            if [[ "$HEALTH_CHECK" == *"200"* ]]; then
+              echo "Native Reframe is healthy!"
+              
+              # Get configuration info
+              az vm run-command invoke \
+                --resource-group "${RESOURCE_GROUP}" \
+                --name "${TARGET_VM_NAME}" \
+                --command-id RunShellScript \
+                --scripts "curl -s http://localhost:3000/health | jq ." \
+                --query 'value[0].message' -o tsv
+              
+              exit 0
+            fi
+            echo "Attempt $i/90: Reframe not ready yet..."
+            sleep 10
+          done
+          
+          echo "Reframe failed to become healthy"
+          exit 1
+
+  benchmark:
+    name: Run Native Benchmark
+    runs-on: ubuntu-latest
+    needs: [provision, deploy]
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      - name: Execute Native Benchmark
+        id: benchmark
+        run: |
+          TARGET_VM_NAME="reframe-target-${{ needs.provision.outputs.run_id }}"
+          RESOURCE_GROUP="${{ needs.provision.outputs.resource_group }}"
+          
+          echo "Starting native benchmark..."
+          
+          # Record start time for metrics collection
+          BENCHMARK_START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          echo "benchmark_start=${BENCHMARK_START}" >> $GITHUB_OUTPUT
+          
+          # Run benchmark directly with Python
+          az vm run-command invoke \
+            --resource-group "${RESOURCE_GROUP}" \
+            --name "${TARGET_VM_NAME}" \
+            --command-id RunShellScript \
+            --scripts "cd /opt/benchmark && \
+              REFRAME_URL=http://localhost:3000 \
+              BENCHMARK_REQUESTS=${{ inputs.benchmark_requests }} \
+              BENCHMARK_CONFIGS='${{ inputs.benchmark_configs }}' \
+              python3 benchmark.py" \
+            --query 'value[0].message' -o tsv > benchmark_raw_output.txt
+          
+          # Record end time for metrics collection
+          BENCHMARK_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          echo "benchmark_end=${BENCHMARK_END}" >> $GITHUB_OUTPUT
+          
+          # Extract JSON output
+          sed -n '/JSON_OUTPUT_START/,/JSON_OUTPUT_END/p' benchmark_raw_output.txt | sed '1d;$d' > benchmark_results.json
+          
+          # Display summary
+          echo "Benchmark completed. Raw output:"
+          cat benchmark_raw_output.txt
+      
+      - name: Collect System Metrics
+        id: metrics
+        run: |
+          TARGET_VM_NAME="reframe-target-${{ needs.provision.outputs.run_id }}"
+          RESOURCE_GROUP="${{ needs.provision.outputs.resource_group }}"
+          
+          # Get system info
+          echo "Collecting system information..."
+          az vm run-command invoke \
+            --resource-group "${RESOURCE_GROUP}" \
+            --name "${TARGET_VM_NAME}" \
+            --command-id RunShellScript \
+            --scripts "echo 'CPU Info:' && lscpu | grep -E 'Model name|CPU\(s\)|Thread|Core|Socket' && \
+                      echo && echo 'Memory Info:' && free -h && \
+                      echo && echo 'Process Info:' && ps aux | grep reframe | grep -v grep" \
+            --query 'value[0].message' -o tsv
+          
+          # Get Azure metrics
+          SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+          START_TIME="${{ steps.benchmark.outputs.benchmark_start }}"
+          END_TIME="${{ steps.benchmark.outputs.benchmark_end }}"
+          
+          echo "Collecting CPU metrics from ${START_TIME} to ${END_TIME}"
+          
+          # Wait for metrics to be available
+          sleep 30
+          
+          az monitor metrics list \
+            --resource "/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${{ needs.provision.outputs.resource_group }}/providers/Microsoft.Compute/virtualMachines/${TARGET_VM_NAME}" \
+            --metric "Percentage CPU" \
+            --start-time "${START_TIME}" \
+            --end-time "${END_TIME}" \
+            --interval PT1M \
+            --aggregation Average Maximum \
+            --output json > cpu_metrics.json || echo '{"value":[]}' > cpu_metrics.json
+          
+          # Extract metrics
+          AVG_CPU=$(jq 'if .value[0].timeseries[0].data then ([.value[0].timeseries[0].data[].average | select(. != null)] | if length > 0 then add/length else 0 end) else 0 end' cpu_metrics.json || echo "0")
+          PEAK_CPU=$(jq 'if .value[0].timeseries[0].data then ([.value[0].timeseries[0].data[].maximum | select(. != null)] | if length > 0 then max else 0 end) else 0 end' cpu_metrics.json || echo "0")
+          
+          echo "Average CPU: ${AVG_CPU}%"
+          echo "Peak CPU: ${PEAK_CPU}%"
+          
+          echo "avg_cpu=${AVG_CPU}" >> $GITHUB_OUTPUT
+          echo "peak_cpu=${PEAK_CPU}" >> $GITHUB_OUTPUT
+      
+      - name: Generate Report
+        id: report
+        run: |
+          RUN_ID="${{ needs.provision.outputs.run_id }}"
+          VM_SIZE="${{ inputs.target_vm_size }}"
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          
+          # Parse benchmark results
+          if [ -f benchmark_results.json ] && [ -s benchmark_results.json ]; then
+            BENCHMARK_DATA=$(cat benchmark_results.json)
+          else
+            BENCHMARK_DATA='{"error": "No benchmark results found"}'
+          fi
+          
+          # Create comprehensive report
+          cat > report.json << EOF
+          {
+            "run_id": "${RUN_ID}",
+            "timestamp": "${TIMESTAMP}",
+            "deployment": "native",
+            "configuration": {
+              "target_vm_size": "${VM_SIZE}",
+              "reframe_thread_count": ${{ inputs.reframe_thread_count }},
+              "reframe_max_concurrent_tasks": ${{ inputs.reframe_max_concurrent_tasks }},
+              "benchmark_requests": ${{ inputs.benchmark_requests }},
+              "benchmark_configs": "${{ inputs.benchmark_configs }}"
+            },
+            "metrics": {
+              "cpu": {
+                "average": ${{ steps.metrics.outputs.avg_cpu }},
+                "peak": ${{ steps.metrics.outputs.peak_cpu }}
+              }
+            },
+            "benchmark_results": ${BENCHMARK_DATA}
+          }
+          EOF
+          
+          # Save report
+          REPORT_NAME="benchmark_native_${VM_SIZE}_$(date +%Y%m%d)_${RUN_ID}.json"
+          mkdir -p reports
+          cp report.json "reports/${REPORT_NAME}"
+          
+          echo "Report generated: ${REPORT_NAME}"
+          jq '.benchmark_results.summary' report.json
+          
+          echo "report_name=${REPORT_NAME}" >> $GITHUB_OUTPUT
+      
+      - name: Commit Report
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          if [ -f "reports/${{ steps.report.outputs.report_name }}" ]; then
+            git add -f "reports/${{ steps.report.outputs.report_name }}"
+            git commit -m "Add native benchmark report: ${{ steps.report.outputs.report_name }}" || echo "No changes to commit"
+            git push || echo "Nothing to push"
+          fi
+
+  cleanup:
+    name: Cleanup Resources
+    runs-on: ubuntu-latest
+    needs: [provision, benchmark]
+    if: always()
+    steps:
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      - name: Delete Resource Group
+        run: |
+          az group delete \
+            --name "${{ needs.provision.outputs.resource_group }}" \
+            --yes \
+            --no-wait
+          
+          echo "Resource group deletion initiated. All resources will be removed."
