@@ -45,8 +45,9 @@ packages:
   - jq
 
 write_files:
-  - path: /opt/benchmark/scripts/run-benchmark.py
+  - path: /opt/benchmark/run-benchmark.py
     permissions: '0755'
+    owner: root:root
     content: |
 $(cat ./scripts/run-benchmark.py | sed 's/^/      /')
   - path: /opt/reframe/docker-compose.yml
@@ -82,14 +83,14 @@ $(cat ./scripts/run-benchmark.py | sed 's/^/      /')
             - PYTHONUNBUFFERED=1
             - BENCHMARK_REQUESTS=\${BENCHMARK_REQUESTS:-100000}
             - BENCHMARK_CONFIGS=\${BENCHMARK_CONFIGS:-8,32,128}
+            - BENCHMARK_WARMUP=10
           networks:
             - reframe-network
           profiles:
             - benchmark
           volumes:
-            - /opt/benchmark/results:/app/results
-            - /opt/benchmark/scripts:/app/scripts
-          command: python3 /app/scripts/run-benchmark.py
+            - /opt/benchmark/run-benchmark.py:/app/run-benchmark.py:ro
+          command: python3 /app/run-benchmark.py
       
       networks:
         reframe-network:
@@ -99,8 +100,7 @@ runcmd:
   - systemctl start docker
   - systemctl enable docker
   - docker login ${ACR_URL} -u ${ACR_USERNAME} -p ${ACR_PASSWORD}
-  - mkdir -p /opt/benchmark/results
-  - mkdir -p /opt/benchmark/scripts
+  - mkdir -p /opt/benchmark
   - cd /opt/reframe && docker-compose pull
   - cd /opt/reframe && docker-compose up -d reframe-app
 EOF

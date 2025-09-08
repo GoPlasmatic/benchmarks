@@ -141,14 +141,14 @@ jobs:
           
           echo "Starting benchmark on target VM using docker-compose..."
           
-          # Update docker-compose environment and run benchmark
+          # Run benchmark using docker-compose with environment variables
           az vm run-command invoke \
             --resource-group "${RESOURCE_GROUP}" \
             --name "${TARGET_VM_NAME}" \
             --command-id RunShellScript \
             --scripts "cd /opt/reframe && \
-              export BENCHMARK_REQUESTS=${{ inputs.benchmark_requests }} && \
-              export BENCHMARK_CONFIGS=${{ inputs.benchmark_configs }} && \
+              BENCHMARK_REQUESTS=${{ inputs.benchmark_requests }} \
+              BENCHMARK_CONFIGS='${{ inputs.benchmark_configs }}' \
               docker-compose --profile benchmark run --rm benchmark-runner" \
             --query 'value[0].message' -o tsv > benchmark_raw_output.txt
           
