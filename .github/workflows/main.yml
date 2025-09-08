@@ -48,7 +48,7 @@ on:
 env:
   RESOURCE_GROUP: ${{ vars.RESOURCE_GROUP }}
   PROJECT_NAME: ${{ vars.PROJECT_NAME }}
-  BENCHMARK_VM_SIZE: ${{ vars.BENCHMARK_VM_SIZE }}
+  BENCHMARK_VM_SIZE: ${{ vars.BENCHMARK_VM_SIZE || 'Standard_B2s' }}
   AZURE_LOCATION: ${{ vars.AZURE_LOCATION || 'eastus' }}
 
 jobs:
