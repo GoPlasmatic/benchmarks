@@ -73,7 +73,7 @@ $(cat ./scripts/run-benchmark.py | sed 's/^/      /')
             start_period: 30s
         
         benchmark-runner:
-          image: ${ACR_URL}/benchmark-runner:latest
+          image: python:3.11-slim
           container_name: benchmark-runner
           depends_on:
             reframe-app:
@@ -90,7 +90,7 @@ $(cat ./scripts/run-benchmark.py | sed 's/^/      /')
             - benchmark
           volumes:
             - /opt/benchmark/run-benchmark.py:/app/run-benchmark.py:ro
-          command: python3 /app/run-benchmark.py
+          command: sh -c "pip install --no-cache-dir aiohttp && python3 /app/run-benchmark.py"
       
       networks:
         reframe-network:
