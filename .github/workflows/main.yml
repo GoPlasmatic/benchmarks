@@ -212,8 +212,8 @@ jobs:
             --output json > cpu_metrics.json || echo '{"value":[]}' > cpu_metrics.json
           
           # Extract average and peak CPU (with defaults if no data)
-          AVG_CPU=$(jq '[.value[0].timeseries[0].data[].average] | if length > 0 then add/length else 0 end' cpu_metrics.json)
-          PEAK_CPU=$(jq '[.value[0].timeseries[0].data[].maximum] | if length > 0 then max else 0 end' cpu_metrics.json)
+          AVG_CPU=$(jq 'if .value[0].timeseries[0].data then ([.value[0].timeseries[0].data[].average | select(. != null)] | if length > 0 then add/length else 0 end) else 0 end' cpu_metrics.json || echo "0")
+          PEAK_CPU=$(jq 'if .value[0].timeseries[0].data then ([.value[0].timeseries[0].data[].maximum | select(. != null)] | if length > 0 then max else 0 end) else 0 end' cpu_metrics.json || echo "0")
           
           echo "avg_cpu=${AVG_CPU}" >> $GITHUB_OUTPUT
           echo "peak_cpu=${PEAK_CPU}" >> $GITHUB_OUTPUT
