@@ -50,7 +50,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       target_vm_ip: ${{ steps.provision.outputs.target_vm_ip }}
-      runner_vm_ip: ${{ steps.provision.outputs.runner_vm_ip }}
       run_id: ${{ steps.provision.outputs.run_id }}
       resource_group: ${{ steps.generate_id.outputs.resource_group }}
     steps:
@@ -137,45 +136,20 @@ jobs:
       - name: Execute Benchmark
         id: benchmark
         run: |
-          RUNNER_VM_NAME="reframe-runner-${{ needs.provision.outputs.run_id }}"
-          TARGET_VM_IP="${{ needs.provision.outputs.target_vm_ip }}"
+          TARGET_VM_NAME="reframe-target-${{ needs.provision.outputs.run_id }}"
+          RESOURCE_GROUP="${{ needs.provision.outputs.resource_group }}"
           
-          # Create benchmark script
-          cat > run_benchmark.sh << SCRIPT_END
-          #!/bin/bash
-          set -e
+          echo "Starting benchmark on target VM using docker-compose..."
           
-          export REFRAME_URL="http://${TARGET_VM_IP}:3000"
-          export BENCHMARK_REQUESTS="${{ inputs.benchmark_requests }}"
-          export BENCHMARK_CONFIGS="${{ inputs.benchmark_configs }}"
-          export PYTHONUNBUFFERED=1
-          
-          echo "Starting benchmark..."
-          echo "Target: \${REFRAME_URL}"
-          echo "Requests: \${BENCHMARK_REQUESTS}"
-          echo "Configs: \${BENCHMARK_CONFIGS}"
-          
-          # Run benchmark using local Docker image (with timeout for safety)
-          cd /opt/benchmark
-          timeout 480 docker run --rm \
-            -e REFRAME_URL="\${REFRAME_URL}" \
-            -e BENCHMARK_REQUESTS="\${BENCHMARK_REQUESTS}" \
-            -e BENCHMARK_CONFIGS="\${BENCHMARK_CONFIGS}" \
-            -e PYTHONUNBUFFERED=1 \
-            --network host \
-            benchmark-runner > /tmp/benchmark_output.txt 2>&1 || true
-          
-          # Output results
-          cat /tmp/benchmark_output.txt
-          SCRIPT_END
-          
-          # Make script executable and run it on runner VM (with extended timeout for large benchmarks)
+          # Update docker-compose environment and run benchmark
           az vm run-command invoke \
-            --resource-group "${{ needs.provision.outputs.resource_group }}" \
-            --name "${RUNNER_VM_NAME}" \
+            --resource-group "${RESOURCE_GROUP}" \
+            --name "${TARGET_VM_NAME}" \
             --command-id RunShellScript \
-            --scripts @run_benchmark.sh \
-            --timeout 600 \
+            --scripts "cd /opt/reframe && \
+              export BENCHMARK_REQUESTS=${{ inputs.benchmark_requests }} && \
+              export BENCHMARK_CONFIGS=${{ inputs.benchmark_configs }} && \
+              docker-compose --profile benchmark run --rm benchmark-runner" \
             --query 'value[0].message' -o tsv > benchmark_raw_output.txt
           
           # Extract JSON output
