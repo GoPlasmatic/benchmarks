@@ -105,11 +105,19 @@ jobs:
       
       - name: Wait for Reframe Deployment
         run: |
-          TARGET_VM_IP="${{ needs.provision.outputs.target_vm_ip }}"
-          echo "Waiting for Reframe to be healthy at ${TARGET_VM_IP}:3000..."
+          TARGET_VM_NAME="reframe-target-${{ needs.provision.outputs.run_id }}"
+          RESOURCE_GROUP="${{ needs.provision.outputs.resource_group }}"
+          echo "Waiting for Reframe to be healthy on ${TARGET_VM_NAME}..."
           
           for i in {1..60}; do
-            if curl -f "http://${TARGET_VM_IP}:3000/health" 2>/dev/null; then
+            HEALTH_CHECK=$(az vm run-command invoke \
+              --resource-group "${RESOURCE_GROUP}" \
+              --name "${TARGET_VM_NAME}" \
+              --command-id RunShellScript \
+              --scripts "curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/health" \
+              --query 'value[0].message' -o tsv 2>/dev/null || echo "")
+            
+            if [[ "$HEALTH_CHECK" == *"200"* ]]; then
               echo "Reframe is healthy!"
               exit 0
             fi
@@ -139,7 +147,7 @@ jobs:
           TARGET_VM_IP="${{ needs.provision.outputs.target_vm_ip }}"
           
           # Create benchmark script
-          cat > run_benchmark.sh << 'SCRIPT_END'
+          cat > run_benchmark.sh << SCRIPT_END
           #!/bin/bash
           set -e
           
@@ -149,16 +157,16 @@ jobs:
           export PYTHONUNBUFFERED=1
           
           echo "Starting benchmark..."
-          echo "Target: ${REFRAME_URL}"
-          echo "Requests: ${BENCHMARK_REQUESTS}"
-          echo "Configs: ${BENCHMARK_CONFIGS}"
+          echo "Target: \${REFRAME_URL}"
+          echo "Requests: \${BENCHMARK_REQUESTS}"
+          echo "Configs: \${BENCHMARK_CONFIGS}"
           
           # Run benchmark using local Docker image
           cd /opt/benchmark
           docker run --rm \
-            -e REFRAME_URL="${REFRAME_URL}" \
-            -e BENCHMARK_REQUESTS="${BENCHMARK_REQUESTS}" \
-            -e BENCHMARK_CONFIGS="${BENCHMARK_CONFIGS}" \
+            -e REFRAME_URL="\${REFRAME_URL}" \
+            -e BENCHMARK_REQUESTS="\${BENCHMARK_REQUESTS}" \
+            -e BENCHMARK_CONFIGS="\${BENCHMARK_CONFIGS}" \
             -e PYTHONUNBUFFERED=1 \
             --network host \
             benchmark-runner > /tmp/benchmark_output.txt 2>&1
