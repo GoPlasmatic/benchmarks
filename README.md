@@ -1,437 +1,298 @@
-# Plasmatic Benchmarks
-
-Centralized benchmarking infrastructure for all Plasmatic products, providing automated performance testing, resource provisioning, and reporting capabilities.
+# Automated Benchmarking System
 
 ## Overview
-
-This repository contains benchmarking scripts, CI/CD pipelines, and infrastructure provisioning tools for performance testing of Plasmatic products. The infrastructure is designed to be product-agnostic and scalable, supporting automated end-to-end benchmarking workflows.
+Automated benchmarking pipeline for Reframe application using GitHub Actions, Azure infrastructure, and containerized deployments.
 
 ## Architecture
 
-The benchmarking system follows a cloud-native, containerized approach with automated provisioning and cleanup:
+### Components
+- **Reframe Application**: Target application to benchmark (located in `../Reframe`)
+- **Benchmark Runner**: Dedicated VM (Standard_B2ls_v2) running Docker container with benchmark
+- **Target VMs**: Variable-sized VMs hosting Reframe application
+- **GitHub Actions**: Orchestration layer following infra-automation patterns
+- **Azure Container Registry**: Hosts Reframe Docker images (org-level ACR)
+- **Resource Group**: Single ephemeral resource group for all resources
+- **Private Network**: VMs communicate via Azure VNet (no public IPs)
+- **Report Storage**: Results committed to `reports/` directory in repo
 
-```
-GitHub Actions → Azure VM Provisioning → Product Deployment → Benchmark Execution → Report Storage → Resource Cleanup
-```
+### Workflow Stages
+1. **Infrastructure Provisioning**: Terraform-based Azure resource creation
+2. **Application Deployment**: Docker-based deployment from ACR
+3. **Benchmark Execution**: Performance testing from dedicated runner
+4. **Report Generation**: Metrics collection and artifact storage
+5. **Cleanup**: Complete resource teardown and cost optimization
 
-## Workflow Sequence
+### Integration Points
+- **infra-automation**: Reuses deployment scripts and Docker configurations
+- **Reframe**: Source application with Dockerfile for containerization
+- **Benchmark Script**: Uses existing `../Reframe/test/simple_benchmark.py`
+- **Organization Secrets**: Leverages existing Azure and ACR credentials
 
-The automated benchmarking process follows these steps:
-
-### 1. Workflow Trigger
-- GitHub Actions workflow is triggered (manually or on schedule)
-- Configuration specifies target product and benchmark parameters
-
-### 2. Infrastructure Provisioning
-- Azure VMs are provisioned based on configuration:
-  - Product VM: Sized according to product requirements
-  - Benchmark VM: Smaller instance for running benchmark scripts
-- Network security groups and connectivity are configured
-
-### 3. Product Deployment
-- Product Docker images are pulled from Azure Container Registry
-- Docker Compose orchestrates the product stack deployment
-- Health checks ensure services are ready
-
-### 4. Benchmark Execution
-- Benchmark Docker container is deployed on the benchmark VM
-- Scripts execute performance tests against the product instance
-- Metrics are collected in real-time
-
-### 5. Report Generation
-- Performance metrics are aggregated
-- Comprehensive reports are generated (JSON, CSV, HTML formats)
-- Reports include:
-  - Response time statistics
-  - Throughput measurements
-  - Error rates
-  - Resource utilization
-
-### 6. Report Storage
-- Reports are uploaded to Azure Storage Account
-- Organized by product, version, and timestamp
-- Accessible via secure URLs
-
-### 7. Report Listing
-- Workflow provides summary of generated reports
-- Direct links to stored reports in Azure Storage
-- Performance trend analysis
-
-### 8. Resource Cleanup
-- All provisioned VMs are terminated
-- Temporary resources are deleted
-- Cost optimization through automatic cleanup
-
-## Repository Structure
-
+## Directory Structure
 ```
 benchmarks/
 ├── .github/
-│   └── workflows/           # GitHub Actions workflows
-│       └── benchmark-products.yml
-├── infrastructure/          # Infrastructure as Code
-│   ├── azure/              # Azure provisioning scripts
-│   │   ├── provision-vm.sh
-│   │   ├── cleanup.sh
-│   │   └── templates/
-│   └── common/             # Shared infrastructure components
-├── reports/                # Report storage and templates
-│   └── templates/
-└── products/               # Product-specific benchmarks
-    └── reframe/            # Reframe benchmarking
-        ├── docker/         # Docker configurations
-        │   ├── docker-compose.yml
-        │   └── vm-configs/ # VM sizing configurations
-        │       ├── 2-core.json
-        │       ├── 4-core.json
-        │       ├── 8-core.json
-        │       └── 16-core.json
-        ├── scripts/        # Benchmark scripts
-        │   ├── benchmark_transformation.py
-        │   ├── batch_config.json
-        │   └── requirements.txt
-        └── README.md
-
+│   └── workflows/         # GitHub Actions workflows
+│       ├── provision.yml   # Infrastructure provisioning via Azure CLI
+│       ├── deploy.yml      # Application deployment
+│       ├── benchmark.yml   # Benchmark execution
+│       ├── cleanup.yml     # Resource cleanup
+│       └── main.yml        # Main orchestration workflow
+├── scripts/               # Deployment and utility scripts
+│   ├── provision-vms.sh   # Create Azure resources
+│   ├── cloud-init-runner.yml  # Benchmark runner initialization
+│   ├── cloud-init-target.yml  # Target VM initialization
+│   └── docker-compose-benchmark.yml  # Benchmark runner compose file
+├── benchmark/
+│   └── configs/           # Benchmark configurations
+└── reports/               # Stored benchmark reports
+    ├── benchmark_B2s_2024-01-15_001.json
+    ├── benchmark_B4ms_2024-01-15_002.json
+    └── ...
 ```
+
+## Prerequisites
+- Azure subscription with appropriate permissions
+- GitHub repository with Actions enabled
+- Azure Container Registry with Reframe Docker image (org-level ACR)
+- Service Principal for Azure authentication (org-level secret)
 
 ## Configuration
 
-### VM Sizing Strategy
+### GitHub Organization Secrets (Available)
+These secrets are configured at the organization level and available to this repository:
 
-The benchmarking infrastructure tests each product across multiple VM configurations to understand performance scaling characteristics:
+#### Azure & Infrastructure
+- `AZURE_CREDENTIALS`: Service Principal JSON for Azure authentication
 
-#### Standard VM Configurations
+#### Azure Container Registry
+- `ACR_URL`: Azure Container Registry URL
+- `ACR_USERNAME`: Container registry username
+- `ACR_PASSWORD`: Container registry password
 
-**2-Core VM** (Standard_B2s)
-```json
-{
-  "name": "2-core",
-  "size": "Standard_B2s",
-  "vcpus": 2,
-  "memory_gb": 4,
-  "use_case": "Baseline performance testing"
-}
-```
+### GitHub Variables (Configured)
+These variables are already configured at the repository/organization level:
+- `PROJECT_NAME`: `reframe-benchmark`
+- `RESOURCE_GROUP`: `reframe-benchmark-resources`
+- `BENCHMARK_VM_SIZE`: `Standard_B2ls_v2` (fixed)
+- `AZURE_LOCATION`: Azure region (if configured, otherwise defaults to `East US`)
 
-**4-Core VM** (Standard_D4s_v3)
-```json
-{
-  "name": "4-core",
-  "size": "Standard_D4s_v3",
-  "vcpus": 4,
-  "memory_gb": 16,
-  "use_case": "Small-scale production workloads"
-}
-```
+### Workflow Input Parameters
+These parameters can be provided when triggering the workflow:
 
-**8-Core VM** (Standard_D8s_v3)
-```json
-{
-  "name": "8-core",
-  "size": "Standard_D8s_v3",
-  "vcpus": 8,
-  "memory_gb": 32,
-  "use_case": "Medium-scale production workloads"
-}
-```
+#### VM Configuration
+- `TARGET_VM_SIZE`: Target VM size (e.g., `Standard_B2s`, `Standard_B4ms`, `Standard_B8ms`)
 
-**16-Core VM** (Standard_D16s_v3)
-```json
-{
-  "name": "16-core",
-  "size": "Standard_D16s_v3",
-  "vcpus": 16,
-  "memory_gb": 64,
-  "use_case": "High-performance production workloads"
-}
-```
+#### Benchmark Configuration
+- `BENCHMARK_REQUESTS`: Total number of requests (default: 100000)
+- `BENCHMARK_CONCURRENT`: Number of concurrent connections (default: 128)
+- `BENCHMARK_CONFIGS`: Comma-separated concurrency levels (default: "8,32,128,256")
 
-#### Benchmark VM Configuration
-The benchmark script VM remains constant across all tests:
-```json
-{
-  "size": "Standard_B2s",
-  "vcpus": 2,
-  "memory_gb": 4,
-  "disk_size_gb": 32,
-  "purpose": "Running benchmark scripts only"
-}
-```
+#### Reframe Performance Tuning
+- `REFRAME_THREAD_COUNT`: Thread pool size (default: 4)
+- `REFRAME_MAX_CONCURRENT_TASKS`: Max concurrent tasks (default: 16)
 
-## GitHub Actions Workflow
+### Docker Environment Variables (Auto-configured)
+These are set based on docker-compose.yml configuration:
+- `RUST_LOG`: Logging level (set to: `error`)
+- `REFRAME_THREAD_COUNT`: Thread pool size (configurable via workflow input)
+- `REFRAME_MAX_CONCURRENT_TASKS`: Max concurrent tasks (configurable via workflow input)
+- `REFRAME_URL`: Target URL for benchmark runner (auto-set to private IP)
 
-### Manual Trigger
-```yaml
-workflow_dispatch:
-  inputs:
-    product:
-      description: 'Product to benchmark'
-      required: true
-      type: choice
-      options:
-        - reframe
-    vm_configs:
-      description: 'VM configurations to test'
-      required: true
-      type: choice
-      options:
-        - '2-core'
-        - '4-core'
-        - '8-core'
-        - '16-core'
-        - 'all'
-      default: 'all'
-    iterations:
-      description: 'Number of benchmark iterations per VM config'
-      default: '1000'
-    concurrent_requests:
-      description: 'Number of concurrent requests'
-      default: '10'
-```
-
-### Scheduled Execution
-```yaml
-schedule:
-  - cron: '0 2 * * 1'  # Weekly on Monday at 2 AM
-```
-
-## Products
-
-Each product has its own benchmarking setup with product-specific Docker configurations and multiple VM sizing options for performance comparison.
-
-### Reframe
-
-**Product Setup:**
-- **Docker Image**: `plasmatic.azurecr.io/reframe:latest`
-- **Deployment**: Docker Compose based deployment
-- **API Endpoint**: Port 3000
-- **Health Check**: `/health` endpoint
-
-**Benchmarking Capabilities:**
-- SWIFT MT ↔ ISO 20022 transformation testing
-- Message generation and validation
-- Concurrent request handling (1-50 threads)
-- Batch execution support
-
-**VM Configurations:**
-Multiple VM sizes are tested to understand scaling characteristics:
-- **2-core**: Baseline performance metrics
-- **4-core**: Small-scale production simulation
-- **8-core**: Medium-scale production simulation
-- **16-core**: High-performance production simulation
-
-**Benchmark Scripts:**
-- Location: `products/reframe/scripts/`
-- Main script: `benchmark_transformation.py`
-- Configuration: `batch_config.json`
-- Execution: Local Python scripts on benchmark VM
-
-**Performance Metrics Collected:**
-- Response time (min, max, mean, median, p95, p99)
-- Throughput (requests/second)
-- Success/failure rates
-- CPU utilization per core count
-- Memory usage patterns
-- Scaling efficiency (2-core → 16-core)
-
-## Azure Resources
-
-### Required Azure Services
-- **Azure Container Registry**: Product Docker images storage
-- **Azure Virtual Machines**: Dynamic compute resources
-- **Azure Storage Account**: Benchmark reports storage
-- **Azure Virtual Network**: Secure communication between VMs
-
-### Service Principal Requirements
-- VM create/delete permissions
-- Container Registry pull access
-- Storage Account write access
-- Network security group management
-
-## Environment Variables
-
-```bash
-# Azure Configuration
-AZURE_SUBSCRIPTION_ID=xxx
-AZURE_RESOURCE_GROUP=benchmarks-rg
-AZURE_STORAGE_ACCOUNT=benchmarkstorage
-AZURE_CONTAINER_REGISTRY=plasmatic.azurecr.io
-
-# GitHub Secrets
-AZURE_CREDENTIALS=<service-principal-json>
-AZURE_STORAGE_KEY=xxx
-ACR_USERNAME=xxx
-ACR_PASSWORD=xxx
-```
+### VM Specifications
+- **Benchmark Runner**: Standard_B2ls_v2 (2 vCPUs, 4GB RAM) - Fixed
+- **Target Application**: Configurable via `TARGET_VM_SIZE` input
 
 ## Usage
 
-### Manual Benchmark Run
-
-#### Single VM Configuration
+### Manual Trigger
 ```bash
-# Benchmark with specific VM size
-gh workflow run benchmark-products.yml \
-  -f product=reframe \
-  -f vm_configs=4-core \
-  -f iterations=1000 \
-  -f concurrent_requests=10
+# Basic benchmark run
+gh workflow run main.yml -f target_vm_size=Standard_B4ms
+
+# Custom benchmark configuration
+gh workflow run main.yml \
+  -f target_vm_size=Standard_B8ms \
+  -f benchmark_requests=200000 \
+  -f benchmark_concurrent=256 \
+  -f benchmark_configs="16,64,128,256,512"
+
+# Optimized Reframe performance settings
+gh workflow run main.yml \
+  -f target_vm_size=Standard_B4ms \
+  -f reframe_thread_count=8 \
+  -f reframe_max_concurrent_tasks=32 \
+  -f benchmark_requests=100000 \
+  -f benchmark_concurrent=128
 ```
 
-#### All VM Configurations (Performance Comparison)
+### Automated Trigger
+Workflows can be triggered on:
+- Push to main branch (with path filters)
+- Pull requests (benchmark comparison)
+- Schedule (nightly performance regression tests)
+- Manual dispatch (with input parameters)
+
+## Workflow Details
+
+### 1. Provision Infrastructure (`provision.yml`)
+Using Azure CLI for ephemeral resources:
+- **Single Resource Group**: All resources in one group for atomic cleanup
+- **No State Storage**: Resources are ephemeral, no Terraform state needed
+- **Resource Naming**: `${PROJECT_NAME}-${ENVIRONMENT}-${TIMESTAMP}` convention
+- **Private Network Setup**: 
+  - Virtual network with private subnet (10.0.1.0/24)
+  - No public IPs assigned to VMs
+  - Internal communication only via private IPs
+  - GitHub runner manages deployment via Azure CLI
+- **VM Provisioning**:
+  - Benchmark runner: Standard_B2ls_v2 with Docker pre-installed
+  - Target application: Configurable size with Docker pre-installed
+  - Both VMs in same VNet for local communication
+  - No persistent storage disks (ephemeral only)
+- **Cloud-init**: Automated setup without SSH access
+
+### 2. Deploy Application (`deploy.yml`)
+Automated deployment via cloud-init:
+- **ACR Authentication**: Uses org-level ACR credentials
+- **Docker Deployment**: 
+  - Pull Reframe image from ACR
+  - Run with docker-compose configuration
+  - Set performance tuning environment variables
+- **Cloud-init Script**: Automated deployment without SSH
+- **Health Checks**: Uses Docker healthcheck (http://localhost:3000/health)
+- **Environment Variables**: 
+  - `RUST_LOG=error`
+  - `REFRAME_THREAD_COUNT` (from workflow input)
+  - `REFRAME_MAX_CONCURRENT_TASKS` (from workflow input)
+
+### 3. Run Benchmark (`benchmark.yml`)
+- **Docker Execution**: Runs benchmark container with Dockerfile.benchmark
+- **Target**: Uses private IP of Reframe VM via `REFRAME_URL` environment variable
+- **Benchmark Configuration**:
+  - Uses updated `simple_benchmark.py` with `REFRAME_URL` support
+  - Runs in Docker container with Python 3.11 and aiohttp
+  - Multiple concurrency levels from `BENCHMARK_CONFIGS`
+- **Metrics Collection**:
+  - **Throughput**: Requests per second (RPS)
+  - **Response Latency**: Distribution (p50, p95, p99, p99.9)
+  - **CPU Usage**: Average and peak utilization via Azure Monitor
+  - **Memory Usage**: System metrics from Azure
+- **Error Handling**: Comprehensive failure management with retries
+- **Artifact Generation**: Structured JSON reports with all metrics
+
+### 4. Extract & Store Reports
+- **Report Generation**: Structured JSON with metadata
+- **Git Storage**: Commit to `reports/` directory
+- **Naming Convention**: `benchmark_${VM_SIZE}_${DATE}_${RUN_ID}.json`
+- **Report Contents**:
+  - Reframe version (from Docker image tag)
+  - VM size configuration
+  - Timestamp and duration
+  - All performance metrics
+- **Historical Tracking**: Version-controlled in repository
+
+### 5. Cleanup Resources (`cleanup.yml`)
+- **Single Command Cleanup**: Delete entire resource group
+- **Atomic Operation**: All resources removed together
+- **State Cleanup**: Maintain Terraform state consistency
+- **Cost Optimization**: Guaranteed no orphaned resources
+
+## Benchmark Script Details
+
+### Using `simple_benchmark.py`
+The benchmark script from `../Reframe/test/simple_benchmark.py` is updated to use environment variables:
+- **Target URL**: Uses `REFRAME_URL` environment variable (set to http://<private-ip>:3000)
+- **Script Parameters** (mapped from workflow inputs):
+  - `num_requests`: From `BENCHMARK_REQUESTS` input
+  - `concurrent`: From `BENCHMARK_CONCURRENT` input
+  - Multiple test runs: From `BENCHMARK_CONFIGS` (comma-separated values)
+- **Docker Configuration**:
+  - Runs in separate container using `Dockerfile.benchmark`
+  - Python 3.11 with aiohttp
+  - Environment: `REFRAME_URL` pointing to target VM
+  - `PYTHONUNBUFFERED=1` for real-time output
+
+### Metrics Output
+The script provides:
+- Throughput (requests/second)
+- Latency percentiles (p50, p95, p99, p99.9)
+- Min/Max/Average latency
+- Success rate
+- Results in JSON format for artifact storage
+
+### CPU Metrics Collection
+Additional monitoring via Azure Monitor API:
+- Collected in parallel during benchmark execution
+- Average and peak CPU utilization
+- Memory usage statistics
+- Network throughput
+
+## Development
+
+### Local Testing
 ```bash
-# Run benchmarks across all VM sizes for comparison
-gh workflow run benchmark-products.yml \
-  -f product=reframe \
-  -f vm_configs=all \
-  -f iterations=1000 \
-  -f concurrent_requests=10
+# Test infrastructure provisioning
+./scripts/test-provision.sh
+
+# Test benchmark execution
+./scripts/test-benchmark.sh
+
+# Manual cleanup
+./scripts/cleanup-all.sh
 ```
 
-### Expected Outputs
+### Adding New Benchmarks
+1. Add benchmark script to `benchmark/scripts/`
+2. Update configuration in `benchmark/configs/`
+3. Modify workflow to include new benchmark
 
-When running with `vm_configs=all`, the workflow will:
-1. Provision and test 2-core VM → collect metrics
-2. Provision and test 4-core VM → collect metrics
-3. Provision and test 8-core VM → collect metrics
-4. Provision and test 16-core VM → collect metrics
-5. Generate comparison report showing:
-   - Performance scaling curve
-   - Cost-performance analysis
-   - Recommendations for production deployment
+## Monitoring & Reporting
 
-### Local Development
-```bash
-# Run benchmark scripts locally
-cd products/reframe/scripts
-python3 benchmark_transformation.py MT103 standard -i 100
-
-# Test infrastructure scripts
-./infrastructure/azure/provision-vm.sh --dry-run
-```
-
-## Reports
+### Metrics Collected
+- **Throughput**: Requests per second (RPS) over time
+- **Response Latency Distribution**:
+  - p50 (median)
+  - p95 (95th percentile)
+  - p99 (99th percentile)
+  - p99.9 (99.9th percentile)
+  - Min/Max values
+- **CPU Usage**:
+  - Average CPU utilization (%)
+  - Peak CPU utilization (%)
+  - CPU usage over time
+- **Error Metrics**: Error rate and types
+- **Connection Metrics**: Active connections, connection errors
 
 ### Report Formats
-- **JSON**: Detailed metrics and raw data
-- **CSV**: Tabular data for analysis
-- **HTML**: Visual dashboard with charts
-- **Comparison Report**: Performance across VM sizes
-
-### Report Storage Structure
-```
-benchmarks/
-└── reframe/
-    ├── 2024-01-15/
-    │   ├── 2-core/
-    │   │   ├── summary.json
-    │   │   └── metrics.csv
-    │   ├── 4-core/
-    │   │   ├── summary.json
-    │   │   └── metrics.csv
-    │   ├── 8-core/
-    │   │   ├── summary.json
-    │   │   └── metrics.csv
-    │   ├── 16-core/
-    │   │   ├── summary.json
-    │   │   └── metrics.csv
-    │   └── comparison-report.html
-    └── latest/           # Symlink to most recent
-```
-
-### Performance Comparison Analysis
-
-The comparison report includes:
-- **Scaling Efficiency**: How performance improves from 2-core to 16-core
-- **Cost-Performance Ratio**: Performance gain vs. VM cost increase
-- **Optimal Configuration**: Recommended VM size based on workload
-- **Bottleneck Analysis**: Identifies if app is CPU, memory, or I/O bound
-
-### Accessing Reports
-Reports are accessible via:
-1. Azure Storage Explorer
-2. Direct URLs (with SAS tokens)
-3. GitHub Actions artifacts
-4. Azure Storage REST API
-
-## Security Considerations
-
-- All secrets stored in GitHub Secrets
-- Azure Service Principal with minimal required permissions
-- Network isolation between VMs
-- Automatic resource cleanup to prevent cost overruns
-- Secure communication using private endpoints
-
-## Cost Management
-
-- Automatic VM deprovisioning after benchmarks
-- Use of spot instances where applicable
-- Resource tagging for cost tracking
-- Configurable VM sizes based on requirements
-
-## Contributing
-
-### Adding a New Product
-
-1. Create product directory under `products/`
-2. Add benchmark scripts
-3. Create Docker Compose configuration
-4. Update `configs/products.json`
-5. Create GitHub Actions workflow
-6. Document in product-specific README
-
-### Benchmark Script Requirements
-
-- Support for batch execution
-- Configurable iterations and concurrency
-- Standard output formats (JSON, CSV)
-- Error handling and retry logic
-- Progress reporting
-
-## Monitoring
-
-- GitHub Actions logs for workflow execution
-- Azure Monitor for VM metrics
-- Application Insights for performance tracking
-- Cost alerts for budget management
+- JSON (machine-readable)
+- HTML (human-readable dashboard)
+- CSV (for data analysis)
 
 ## Troubleshooting
 
 ### Common Issues
+1. **Provisioning Failures**: Check Azure quotas and permissions
+2. **Deployment Failures**: Verify ACR credentials and image availability
+3. **Benchmark Timeouts**: Adjust timeout values in workflow
+4. **Cleanup Issues**: Run manual cleanup script
 
-1. **VM Provisioning Failures**
-   - Check Azure quotas
-   - Verify service principal permissions
-   - Review region availability
+### Debug Mode
+Enable debug logging in workflows:
+```yaml
+env:
+  ACTIONS_RUNNER_DEBUG: true
+  ACTIONS_STEP_DEBUG: true
+```
 
-2. **Docker Pull Errors**
-   - Verify ACR credentials
-   - Check network connectivity
-   - Confirm image existence
-
-3. **Benchmark Timeouts**
-   - Increase VM size
-   - Adjust timeout configurations
-   - Check product health
-
-## Future Enhancements
-
-- [ ] Kubernetes-based benchmarking
-- [ ] Multi-region testing
-- [ ] Comparative benchmarking between versions
-- [ ] Real-time monitoring dashboard
-- [ ] Cost optimization recommendations
-- [ ] Performance regression detection
-- [ ] Auto-scaling based on load
-- [ ] Integration with APM tools
+## Contributing
+1. Create feature branch
+2. Test changes locally
+3. Submit pull request
+4. Ensure all checks pass
 
 ## License
+[Your License]
 
-Proprietary - Plasmatic
-
-## Support
-
-For issues or questions:
-- Create an issue in this repository
-- Contact the Platform team
-- Check the [Wiki](wiki-link) for detailed documentation
+## Contact
+[Your Contact Information]

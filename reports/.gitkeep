@@ -1,0 +1,2 @@
+# This directory stores benchmark reports in JSON format
+# Files are named: benchmark_<VM_SIZE>_<DATE>_<RUN_ID>.json

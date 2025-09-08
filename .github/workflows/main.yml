@@ -1,0 +1,287 @@
+name: Benchmark Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_vm_size:
+        description: 'Target VM size for Reframe application'
+        required: true
+        default: 'Standard_B2s'
+        type: choice
+        options:
+          - Standard_B2s
+          - Standard_B4ms
+          - Standard_B8ms
+          - Standard_D2s_v3
+          - Standard_D4s_v3
+      benchmark_requests:
+        description: 'Total number of requests'
+        required: false
+        default: '100000'
+        type: string
+      benchmark_concurrent:
+        description: 'Number of concurrent connections'
+        required: false
+        default: '128'
+        type: string
+      benchmark_configs:
+        description: 'Comma-separated concurrency levels to test'
+        required: false
+        default: '8,32,128,256'
+        type: string
+      reframe_thread_count:
+        description: 'Reframe thread pool size'
+        required: false
+        default: '4'
+        type: string
+      reframe_max_concurrent_tasks:
+        description: 'Reframe max concurrent tasks'
+        required: false
+        default: '16'
+        type: string
+      reframe_version:
+        description: 'Reframe Docker image tag'
+        required: false
+        default: 'latest'
+        type: string
+
+env:
+  RESOURCE_GROUP: ${{ vars.RESOURCE_GROUP }}
+  PROJECT_NAME: ${{ vars.PROJECT_NAME }}
+  BENCHMARK_VM_SIZE: ${{ vars.BENCHMARK_VM_SIZE }}
+  AZURE_LOCATION: ${{ vars.AZURE_LOCATION || 'eastus' }}
+
+jobs:
+  provision:
+    name: Provision Infrastructure
+    runs-on: ubuntu-latest
+    outputs:
+      target_vm_ip: ${{ steps.provision.outputs.target_vm_ip }}
+      runner_vm_ip: ${{ steps.provision.outputs.runner_vm_ip }}
+      run_id: ${{ steps.provision.outputs.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      - name: Generate Run ID
+        id: generate_id
+        run: echo "run_id=$(date +%Y%m%d%H%M%S)" >> $GITHUB_OUTPUT
+      
+      - name: Provision VMs
+        id: provision
+        run: |
+          chmod +x ./scripts/provision-vms.sh
+          ./scripts/provision-vms.sh \
+            "${{ env.RESOURCE_GROUP }}" \
+            "${{ env.AZURE_LOCATION }}" \
+            "${{ inputs.target_vm_size }}" \
+            "${{ env.BENCHMARK_VM_SIZE }}" \
+            "${{ steps.generate_id.outputs.run_id }}"
+        env:
+          ACR_URL: ${{ secrets.ACR_URL }}
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+          REFRAME_VERSION: ${{ inputs.reframe_version }}
+          REFRAME_THREAD_COUNT: ${{ inputs.reframe_thread_count }}
+          REFRAME_MAX_CONCURRENT_TASKS: ${{ inputs.reframe_max_concurrent_tasks }}
+
+  deploy:
+    name: Deploy Reframe Application
+    runs-on: ubuntu-latest
+    needs: provision
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      - name: Wait for Reframe Deployment
+        run: |
+          TARGET_VM_IP="${{ needs.provision.outputs.target_vm_ip }}"
+          echo "Waiting for Reframe to be healthy at ${TARGET_VM_IP}:3000..."
+          
+          for i in {1..60}; do
+            if curl -f "http://${TARGET_VM_IP}:3000/health" 2>/dev/null; then
+              echo "Reframe is healthy!"
+              exit 0
+            fi
+            echo "Attempt $i/60: Reframe not ready yet..."
+            sleep 10
+          done
+          
+          echo "Reframe failed to become healthy"
+          exit 1
+
+  benchmark:
+    name: Run Benchmark
+    runs-on: ubuntu-latest
+    needs: [provision, deploy]
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      - name: Execute Benchmark
+        id: benchmark
+        run: |
+          RUNNER_VM_NAME="reframe-runner-${{ needs.provision.outputs.run_id }}"
+          TARGET_VM_IP="${{ needs.provision.outputs.target_vm_ip }}"
+          
+          # Create benchmark script
+          cat > run_benchmark.sh << 'SCRIPT_END'
+          #!/bin/bash
+          set -e
+          
+          export REFRAME_URL="http://${TARGET_VM_IP}:3000"
+          export BENCHMARK_REQUESTS="${{ inputs.benchmark_requests }}"
+          export BENCHMARK_CONFIGS="${{ inputs.benchmark_configs }}"
+          export PYTHONUNBUFFERED=1
+          
+          echo "Starting benchmark..."
+          echo "Target: ${REFRAME_URL}"
+          echo "Requests: ${BENCHMARK_REQUESTS}"
+          echo "Configs: ${BENCHMARK_CONFIGS}"
+          
+          # Run benchmark using local Docker image
+          cd /opt/benchmark
+          docker run --rm \
+            -e REFRAME_URL="${REFRAME_URL}" \
+            -e BENCHMARK_REQUESTS="${BENCHMARK_REQUESTS}" \
+            -e BENCHMARK_CONFIGS="${BENCHMARK_CONFIGS}" \
+            -e PYTHONUNBUFFERED=1 \
+            --network host \
+            benchmark-runner > /tmp/benchmark_output.txt 2>&1
+          
+          # Output results
+          cat /tmp/benchmark_output.txt
+          SCRIPT_END
+          
+          # Make script executable and run it on runner VM
+          az vm run-command invoke \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --name "${RUNNER_VM_NAME}" \
+            --command-id RunShellScript \
+            --scripts @run_benchmark.sh \
+            --query 'value[0].message' -o tsv > benchmark_raw_output.txt
+          
+          # Extract JSON output
+          sed -n '/JSON_OUTPUT_START/,/JSON_OUTPUT_END/p' benchmark_raw_output.txt | sed '1d;$d' > benchmark_results.json
+          
+          # Display summary
+          echo "Benchmark completed. Raw output:"
+          cat benchmark_raw_output.txt
+      
+      - name: Collect Azure Metrics
+        id: metrics
+        run: |
+          TARGET_VM_NAME="reframe-target-${{ needs.provision.outputs.run_id }}"
+          
+          # Get subscription ID from Azure CLI
+          SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+          
+          # Get CPU metrics for the last hour
+          END_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          START_TIME=$(date -u -d "1 hour ago" +"%Y-%m-%dT%H:%M:%SZ")
+          
+          az monitor metrics list \
+            --resource "/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${{ env.RESOURCE_GROUP }}/providers/Microsoft.Compute/virtualMachines/${TARGET_VM_NAME}" \
+            --metric "Percentage CPU" \
+            --start-time "${START_TIME}" \
+            --end-time "${END_TIME}" \
+            --interval PT1M \
+            --aggregation Average Maximum \
+            --output json > cpu_metrics.json || echo '{"value":[]}' > cpu_metrics.json
+          
+          # Extract average and peak CPU (with defaults if no data)
+          AVG_CPU=$(jq '[.value[0].timeseries[0].data[].average] | if length > 0 then add/length else 0 end' cpu_metrics.json)
+          PEAK_CPU=$(jq '[.value[0].timeseries[0].data[].maximum] | if length > 0 then max else 0 end' cpu_metrics.json)
+          
+          echo "avg_cpu=${AVG_CPU}" >> $GITHUB_OUTPUT
+          echo "peak_cpu=${PEAK_CPU}" >> $GITHUB_OUTPUT
+      
+      - name: Generate Report
+        id: report
+        run: |
+          RUN_ID="${{ needs.provision.outputs.run_id }}"
+          VM_SIZE="${{ inputs.target_vm_size }}"
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          
+          # Parse benchmark results
+          if [ -f benchmark_results.json ] && [ -s benchmark_results.json ]; then
+            BENCHMARK_DATA=$(cat benchmark_results.json)
+          else
+            BENCHMARK_DATA='{"error": "No benchmark results found"}'
+          fi
+          
+          # Create comprehensive report
+          cat > report.json << EOF
+          {
+            "run_id": "${RUN_ID}",
+            "timestamp": "${TIMESTAMP}",
+            "configuration": {
+              "target_vm_size": "${VM_SIZE}",
+              "benchmark_vm_size": "${{ env.BENCHMARK_VM_SIZE }}",
+              "reframe_version": "${{ inputs.reframe_version }}",
+              "reframe_thread_count": ${{ inputs.reframe_thread_count }},
+              "reframe_max_concurrent_tasks": ${{ inputs.reframe_max_concurrent_tasks }},
+              "benchmark_requests": ${{ inputs.benchmark_requests }},
+              "benchmark_configs": "${{ inputs.benchmark_configs }}"
+            },
+            "metrics": {
+              "cpu": {
+                "average": ${{ steps.metrics.outputs.avg_cpu }},
+                "peak": ${{ steps.metrics.outputs.peak_cpu }}
+              }
+            },
+            "benchmark_results": ${BENCHMARK_DATA}
+          }
+          EOF
+          
+          # Save report with naming convention
+          REPORT_NAME="benchmark_${VM_SIZE}_$(date +%Y%m%d)_${RUN_ID}.json"
+          mkdir -p reports
+          cp report.json "reports/${REPORT_NAME}"
+          
+          # Display summary
+          echo "Report generated: ${REPORT_NAME}"
+          jq '.benchmark_results.summary' report.json
+          
+          echo "report_name=${REPORT_NAME}" >> $GITHUB_OUTPUT
+      
+      - name: Commit Report
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add reports/
+          git commit -m "Add benchmark report: ${{ steps.report.outputs.report_name }}"
+          git push
+
+  cleanup:
+    name: Cleanup Resources
+    runs-on: ubuntu-latest
+    needs: [provision, benchmark]
+    if: always()
+    steps:
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      - name: Delete Resource Group
+        run: |
+          # Delete all resources by deleting the resource group
+          az group delete \
+            --name ${{ env.RESOURCE_GROUP }} \
+            --yes \
+            --no-wait
+          
+          echo "Resource group deletion initiated. All resources will be removed."
