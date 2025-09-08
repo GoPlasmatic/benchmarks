@@ -46,7 +46,6 @@ on:
         type: string
 
 env:
-  RESOURCE_GROUP: ${{ vars.RESOURCE_GROUP }}
   PROJECT_NAME: ${{ vars.PROJECT_NAME }}
   BENCHMARK_VM_SIZE: ${{ vars.BENCHMARK_VM_SIZE || 'Standard_B2s' }}
   AZURE_LOCATION: ${{ vars.AZURE_LOCATION || 'eastus' }}
@@ -59,6 +58,7 @@ jobs:
       target_vm_ip: ${{ steps.provision.outputs.target_vm_ip }}
       runner_vm_ip: ${{ steps.provision.outputs.runner_vm_ip }}
       run_id: ${{ steps.provision.outputs.run_id }}
+      resource_group: ${{ steps.generate_id.outputs.resource_group }}
     steps:
       - uses: actions/checkout@v4
       
@@ -69,14 +69,16 @@ jobs:
       
       - name: Generate Run ID
         id: generate_id
-        run: echo "run_id=$(date +%Y%m%d%H%M%S)" >> $GITHUB_OUTPUT
+        run: |
+          echo "run_id=$(date +%Y%m%d%H%M%S)" >> $GITHUB_OUTPUT
+          echo "resource_group=benchmark-rg-$(date +%Y%m%d%H%M%S)" >> $GITHUB_OUTPUT
       
       - name: Provision VMs
         id: provision
         run: |
           chmod +x ./scripts/provision-vms.sh
           ./scripts/provision-vms.sh \
-            "${{ env.RESOURCE_GROUP }}" \
+            "${{ steps.generate_id.outputs.resource_group }}" \
             "${{ env.AZURE_LOCATION }}" \
             "${{ inputs.target_vm_size }}" \
             "${{ env.BENCHMARK_VM_SIZE }}" \
@@ -167,7 +169,7 @@ jobs:
           
           # Make script executable and run it on runner VM
           az vm run-command invoke \
-            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --resource-group "${{ needs.provision.outputs.resource_group }}" \
             --name "${RUNNER_VM_NAME}" \
             --command-id RunShellScript \
             --scripts @run_benchmark.sh \
@@ -193,7 +195,7 @@ jobs:
           START_TIME=$(date -u -d "1 hour ago" +"%Y-%m-%dT%H:%M:%SZ")
           
           az monitor metrics list \
-            --resource "/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${{ env.RESOURCE_GROUP }}/providers/Microsoft.Compute/virtualMachines/${TARGET_VM_NAME}" \
+            --resource "/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${{ needs.provision.outputs.resource_group }}/providers/Microsoft.Compute/virtualMachines/${TARGET_VM_NAME}" \
             --metric "Percentage CPU" \
             --start-time "${START_TIME}" \
             --end-time "${END_TIME}" \
@@ -280,7 +282,7 @@ jobs:
         run: |
           # Delete all resources by deleting the resource group
           az group delete \
-            --name ${{ env.RESOURCE_GROUP }} \
+            --name "${{ needs.provision.outputs.resource_group }}" \
             --yes \
             --no-wait
           
