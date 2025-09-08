@@ -271,9 +271,16 @@ jobs:
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add reports/
-          git commit -m "Add benchmark report: ${{ steps.report.outputs.report_name }}"
-          git push
+          
+          # Ensure reports directory exists and has the report
+          if [ -f "reports/${{ steps.report.outputs.report_name }}" ]; then
+            git add "reports/${{ steps.report.outputs.report_name }}"
+            git commit -m "Add benchmark report: ${{ steps.report.outputs.report_name }}" || echo "No changes to commit"
+            git push || echo "Nothing to push"
+          else
+            echo "Report file not found: reports/${{ steps.report.outputs.report_name }}"
+            exit 1
+          fi
 
   cleanup:
     name: Cleanup Resources

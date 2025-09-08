@@ -33,4 +33,8 @@ Thumbs.db
 # Test outputs
 test-results/
 benchmark-output.txt
+benchmark_raw_output.txt
+benchmark_results.json
 cpu_metrics.json
+run_benchmark.sh
+report.json
