@@ -274,7 +274,7 @@ jobs:
           
           # Ensure reports directory exists and has the report
           if [ -f "reports/${{ steps.report.outputs.report_name }}" ]; then
-            git add "reports/${{ steps.report.outputs.report_name }}"
+            git add -f "reports/${{ steps.report.outputs.report_name }}"
             git commit -m "Add benchmark report: ${{ steps.report.outputs.report_name }}" || echo "No changes to commit"
             git push || echo "Nothing to push"
           else

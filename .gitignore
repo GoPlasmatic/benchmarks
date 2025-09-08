@@ -1,5 +1,5 @@
-# Reports (committed separately)
-reports/*.json
+# Reports are committed to track history
+# reports/*.json
 
 # Temporary files
 *.tmp
