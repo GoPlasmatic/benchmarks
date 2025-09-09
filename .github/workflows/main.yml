@@ -123,37 +123,116 @@ jobs:
       
       - name: Execute Benchmark
         id: benchmark
+        timeout-minutes: 30
         run: |
           TARGET_VM_NAME="reframe-target-${{ needs.provision.outputs.run_id }}"
           RESOURCE_GROUP="${{ needs.provision.outputs.resource_group }}"
           
           echo "Starting benchmark on target VM using docker-compose..."
+          echo "Benchmark requests: ${{ inputs.benchmark_requests }}"
+          echo "Benchmark configs: ${{ inputs.benchmark_configs }}"
           
           # Record start time for metrics collection
           BENCHMARK_START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           echo "benchmark_start=${BENCHMARK_START}" >> $GITHUB_OUTPUT
           
-          # Run benchmark using docker-compose with environment variables
-          az vm run-command invoke \
-            --resource-group "${RESOURCE_GROUP}" \
-            --name "${TARGET_VM_NAME}" \
-            --command-id RunShellScript \
-            --scripts "cd /opt/reframe && \
-              BENCHMARK_REQUESTS=${{ inputs.benchmark_requests }} \
-              BENCHMARK_CONFIGS='${{ inputs.benchmark_configs }}' \
-              docker-compose --profile benchmark run --rm benchmark-runner" \
-            --query 'value[0].message' -o tsv > benchmark_raw_output.txt
+          # Parse configs and run each separately
+          IFS=',' read -ra CONFIGS <<< "${{ inputs.benchmark_configs }}"
+          
+          # Initialize combined results
+          echo '{"results": []}' > benchmark_results.json
+          
+          for CONFIG in "${CONFIGS[@]}"; do
+            CONFIG=$(echo $CONFIG | xargs) # Trim whitespace
+            echo "Running benchmark with concurrency: ${CONFIG}"
+            
+            # Run single config benchmark using docker-compose
+            timeout 300 az vm run-command invoke \
+              --resource-group "${RESOURCE_GROUP}" \
+              --name "${TARGET_VM_NAME}" \
+              --command-id RunShellScript \
+              --scripts "cd /opt/reframe && \
+                BENCHMARK_REQUESTS=${{ inputs.benchmark_requests }} \
+                BENCHMARK_CONFIGS='${CONFIG}' \
+                docker-compose --profile benchmark run --rm benchmark-runner" \
+              --query 'value[0].message' -o tsv > "benchmark_${CONFIG}.txt" || {
+                echo "Warning: Benchmark for config ${CONFIG} failed or timed out"
+                continue
+              }
+            
+            # Extract JSON for this config
+            sed -n '/JSON_OUTPUT_START/,/JSON_OUTPUT_END/p' "benchmark_${CONFIG}.txt" | sed '1d;$d' > "benchmark_${CONFIG}.json"
+            
+            # Show progress
+            if [ -s "benchmark_${CONFIG}.json" ]; then
+              echo "Config ${CONFIG} completed successfully"
+              jq -r '.results[0] | "  Throughput: \(.throughput) req/s, P99 Latency: \(.latency.p99) ms"' "benchmark_${CONFIG}.json" || true
+            else
+              echo "Config ${CONFIG} - no valid results"
+            fi
+          done
           
           # Record end time for metrics collection
           BENCHMARK_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           echo "benchmark_end=${BENCHMARK_END}" >> $GITHUB_OUTPUT
           
-          # Extract JSON output
-          sed -n '/JSON_OUTPUT_START/,/JSON_OUTPUT_END/p' benchmark_raw_output.txt | sed '1d;$d' > benchmark_results.json
+          # Combine all results into single JSON
+          echo "Combining benchmark results..."
+          python3 - << 'EOF'
+          import json
+          import glob
+          import os
+          from datetime import datetime
+          
+          all_results = []
+          config_files = glob.glob("benchmark_*.json")
+          
+          for file in config_files:
+              if os.path.getsize(file) > 0:
+                  try:
+                      with open(file, 'r') as f:
+                          data = json.load(f)
+                          if 'results' in data and data['results']:
+                              all_results.extend(data['results'])
+                  except:
+                      print(f"Warning: Could not parse {file}")
+          
+          # Create combined output
+          output = {
+              'timestamp': datetime.utcnow().isoformat() + 'Z',
+              'configuration': {
+                  'target_url': 'http://localhost:3000',
+                  'total_requests': ${{ inputs.benchmark_requests }},
+                  'concurrency_levels': '${{ inputs.benchmark_configs }}'.split(',')
+              },
+              'results': all_results
+          }
+          
+          # Add summary if we have results
+          if all_results:
+              best_throughput = max(all_results, key=lambda x: x.get('throughput', 0))
+              best_latency = min(all_results, key=lambda x: x.get('latency', {}).get('p99', float('inf')))
+              
+              output['summary'] = {
+                  'best_throughput': {
+                      'configuration': best_throughput.get('configuration'),
+                      'value': best_throughput.get('throughput')
+                  },
+                  'best_p99_latency': {
+                      'configuration': best_latency.get('configuration'),
+                      'value': best_latency.get('latency', {}).get('p99')
+                  }
+              }
+          
+          with open('benchmark_results.json', 'w') as f:
+              json.dump(output, f, indent=2)
+          
+          print(f"Combined {len(all_results)} benchmark results")
+          EOF
           
           # Display summary
-          echo "Benchmark completed. Raw output:"
-          cat benchmark_raw_output.txt
+          echo "Benchmark completed. Summary:"
+          jq '.summary' benchmark_results.json || echo "No summary available"
       
       - name: Collect Azure Metrics
         id: metrics
@@ -218,8 +297,7 @@ jobs:
               "target_vm_size": "${VM_SIZE}",
               "benchmark_vm_size": "${{ env.BENCHMARK_VM_SIZE }}",
               "reframe_version": "${{ inputs.reframe_version }}",
-              "reframe_thread_count": ${{ inputs.reframe_thread_count }},
-              "reframe_max_concurrent_tasks": ${{ inputs.reframe_max_concurrent_tasks }},
+              "reframe_thread_count": "auto (CPU count)",
               "benchmark_requests": ${{ inputs.benchmark_requests }},
               "benchmark_configs": "${{ inputs.benchmark_configs }}"
             },
