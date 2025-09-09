@@ -23,16 +23,6 @@ on:
         required: false
         default: '8,32,128,256'
         type: string
-      reframe_thread_count:
-        description: 'Reframe thread pool size'
-        required: false
-        default: '4'
-        type: string
-      reframe_max_concurrent_tasks:
-        description: 'Reframe max concurrent tasks'
-        required: false
-        default: '16'
-        type: string
       reframe_version:
         description: 'Reframe Docker image tag'
         required: false
@@ -81,8 +71,6 @@ jobs:
           ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
           ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
           REFRAME_VERSION: ${{ inputs.reframe_version }}
-          REFRAME_THREAD_COUNT: ${{ inputs.reframe_thread_count }}
-          REFRAME_MAX_CONCURRENT_TASKS: ${{ inputs.reframe_max_concurrent_tasks }}
 
   deploy:
     name: Deploy Reframe Application

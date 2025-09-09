@@ -68,9 +68,8 @@ $(cat ./scripts/benchmark.py | sed 's/^/      /')
       Environment="RUST_LOG=error"
       # Use a dedicated environment file for Reframe
       EnvironmentFile=-/opt/reframe/reframe.env
-      ExecStartPre=/bin/bash -c 'echo "REFRAME_THREAD_COUNT=$(nproc)" > /opt/reframe/reframe.env && chown reframe:reframe /opt/reframe/reframe.env'
       ExecStart=/opt/reframe/reframe
-      Restart=always
+      Restart=on-failure
       RestartSec=10
       StandardOutput=journal
       StandardError=journal
@@ -141,24 +140,48 @@ runcmd:
   - chown -R reframe:reframe /opt/reframe
   - chmod +x /opt/reframe/reframe
   
+  # Verify the binary is executable
+  - ls -la /opt/reframe/reframe
+  - file /opt/reframe/reframe || true
+  
+  # Ensure environment file has correct permissions
+  - chown reframe:reframe /opt/reframe/reframe.env
+  - cat /opt/reframe/reframe.env
+  
   # Install Python dependencies for benchmark
   - pip3 install aiohttp
   
   # Start Reframe service
   - systemctl daemon-reload
   - systemctl enable reframe
-  - systemctl start reframe
+  - echo "Starting Reframe service..."
+  - systemctl start reframe || (journalctl -u reframe -n 50 --no-pager && false)
+  
+  # Check service status
+  - systemctl status reframe --no-pager || true
+  - journalctl -u reframe -n 20 --no-pager || true
   
   # Wait for service to be ready
   - |
     for i in {1..30}; do
-      if curl -f http://localhost:3000/health > /dev/null 2>&1; then
-        echo "Reframe is ready!"
-        break
+      if systemctl is-active reframe >/dev/null 2>&1; then
+        echo "Reframe service is active"
+        if curl -f http://localhost:3000/health > /dev/null 2>&1; then
+          echo "Reframe is ready and responding!"
+          break
+        else
+          echo "Service active but not responding yet..."
+        fi
+      else
+        echo "Service not active, checking status..."
+        systemctl status reframe --no-pager | head -10
       fi
       echo "Waiting for Reframe to start... (attempt \$i/30)"
-      sleep 2
+      sleep 5
     done
+    
+    # Final check
+    curl -v http://localhost:3000/health || echo "Health check failed"
 EOF
 
 echo "Creating target VM with native deployment..."

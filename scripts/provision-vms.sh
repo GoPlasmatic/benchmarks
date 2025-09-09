@@ -13,8 +13,8 @@ ACR_URL=${ACR_URL}
 ACR_USERNAME=${ACR_USERNAME}
 ACR_PASSWORD=${ACR_PASSWORD}
 REFRAME_VERSION=${REFRAME_VERSION:-latest}
-REFRAME_THREAD_COUNT=${REFRAME_THREAD_COUNT:-4}
-REFRAME_MAX_CONCURRENT_TASKS=${REFRAME_MAX_CONCURRENT_TASKS:-16}
+# Thread count will be set to CPU count
+REFRAME_THREAD_COUNT=${REFRAME_THREAD_COUNT:-0}
 
 echo "Creating resource group: ${RESOURCE_GROUP}"
 az group create --name "${RESOURCE_GROUP}" --location "${LOCATION}" || true
@@ -50,6 +50,10 @@ write_files:
     owner: root:root
     content: |
 $(cat ./scripts/benchmark.py | sed 's/^/      /')
+  - path: /opt/reframe/.env
+    content: |
+      # Auto-detected CPU count
+      REFRAME_THREAD_COUNT=\$(nproc)
   - path: /opt/reframe/docker-compose.yml
     content: |
       version: '3.8'
@@ -61,8 +65,7 @@ $(cat ./scripts/benchmark.py | sed 's/^/      /')
             - "3000:3000"
           environment:
             - RUST_LOG=error
-            - REFRAME_THREAD_COUNT=${REFRAME_THREAD_COUNT}
-            - REFRAME_MAX_CONCURRENT_TASKS=${REFRAME_MAX_CONCURRENT_TASKS}
+            - REFRAME_THREAD_COUNT=\${REFRAME_THREAD_COUNT}
           networks:
             - reframe-network
           healthcheck:
@@ -101,8 +104,15 @@ runcmd:
   - systemctl enable docker
   - docker login ${ACR_URL} -u ${ACR_USERNAME} -p ${ACR_PASSWORD}
   - mkdir -p /opt/benchmark
+  # Set thread count to CPU count
+  - echo "REFRAME_THREAD_COUNT=\$(nproc)" > /opt/reframe/.env
+  - echo "Setting REFRAME_THREAD_COUNT to \$(nproc) cores"
   - cd /opt/reframe && docker-compose pull
   - cd /opt/reframe && docker-compose up -d reframe-app
+  # Check if service started
+  - sleep 10
+  - docker ps
+  - docker logs reframe-app || true
 EOF
 
 echo "Creating target VM..."
