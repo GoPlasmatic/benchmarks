@@ -1,0 +1,111 @@
+{
+  "run_id": "20250909123010",
+  "timestamp": "2025-09-09T12:47:03Z",
+  "configuration": {
+    "target_vm_size": "Standard_B2ms",
+    "benchmark_vm_size": "Standard_B2s",
+    "reframe_version": "latest",
+    "reframe_thread_count": "auto (CPU count)",
+    "benchmark_requests": 100000,
+    "benchmark_configs": "8,32,128,256"
+  },
+  "metrics": {
+    "cpu": {
+      "average": 64.89090909090908,
+      "peak": 95.43
+    }
+  },
+  "benchmark_results": {
+  "timestamp": "2025-09-09T12:46:31.952462Z",
+  "configuration": {
+    "target_url": "http://localhost:3000",
+    "total_requests": 100000,
+    "concurrency_levels": [
+      "8",
+      "32",
+      "128",
+      "256"
+    ]
+  },
+  "results": [
+    {
+      "configuration": "8 concurrent",
+      "total_requests": 100000,
+      "successful_requests": 100000,
+      "success_rate": 100.0,
+      "total_time": 138.991499253,
+      "throughput": 719.4684605709193,
+      "latency": {
+        "min": 2.4522479999973257,
+        "avg": 7.247503901060156,
+        "p50": 7.201145000010456,
+        "p95": 10.861497999997027,
+        "p99": 11.75038499997072,
+        "p99.9": 16.396519000011267,
+        "max": 22.71183700003121
+      }
+    },
+    {
+      "configuration": "32 concurrent",
+      "total_requests": 100000,
+      "successful_requests": 100000,
+      "success_rate": 100.0,
+      "total_time": 141.786919152,
+      "throughput": 705.2836791862081,
+      "latency": {
+        "min": 3.5002609999992274,
+        "avg": 24.450395315499637,
+        "p50": 24.467335999986517,
+        "p95": 41.71744000001354,
+        "p99": 43.41870799999015,
+        "p99.9": 52.60205199999746,
+        "max": 69.1236609999919
+      }
+    },
+    {
+      "configuration": "256 concurrent",
+      "total_requests": 100000,
+      "successful_requests": 100000,
+      "success_rate": 100.0,
+      "total_time": 147.33558180400007,
+      "throughput": 678.7226736107073,
+      "latency": {
+        "min": 13.824689999978546,
+        "avg": 190.91903797587912,
+        "p50": 191.92981200001213,
+        "p95": 340.4327089999697,
+        "p99": 356.0847979999835,
+        "p99.9": 372.6695740000423,
+        "max": 390.4706800000213
+      }
+    },
+    {
+      "configuration": "128 concurrent",
+      "total_requests": 100000,
+      "successful_requests": 100000,
+      "success_rate": 100.0,
+      "total_time": 145.913156674,
+      "throughput": 685.3391584380603,
+      "latency": {
+        "min": 7.00640000002295,
+        "avg": 95.9998093100401,
+        "p50": 96.22403500009113,
+        "p95": 168.9265530000057,
+        "p99": 175.72314200003802,
+        "p99.9": 189.90327699998488,
+        "max": 208.49993399997402
+      }
+    }
+  ],
+  "summary": {
+    "best_throughput": {
+      "configuration": "8 concurrent",
+      "value": 719.4684605709193
+    },
+    "best_p99_latency": {
+      "configuration": "8 concurrent",
+      "value": 11.75038499997072
+    }
+  }
+}
+}
