@@ -66,12 +66,14 @@ $(cat ./scripts/benchmark.py | sed 's/^/      /')
       User=reframe
       WorkingDirectory=/opt/reframe
       Environment="RUST_LOG=error"
-      # Thread count will be set dynamically based on CPU count
-      ExecStartPre=/bin/bash -c 'echo "REFRAME_THREAD_COUNT=\$(nproc)" >> /etc/environment'
-      EnvironmentFile=/etc/environment
+      # Use a dedicated environment file for Reframe
+      EnvironmentFile=-/opt/reframe/reframe.env
+      ExecStartPre=/bin/bash -c 'echo "REFRAME_THREAD_COUNT=$(nproc)" > /opt/reframe/reframe.env && chown reframe:reframe /opt/reframe/reframe.env'
       ExecStart=/opt/reframe/reframe
       Restart=always
       RestartSec=10
+      StandardOutput=journal
+      StandardError=journal
       
       # Performance tuning
       LimitNOFILE=65536
@@ -87,7 +89,10 @@ $(cat ./scripts/benchmark.py | sed 's/^/      /')
       # Set REFRAME_THREAD_COUNT to CPU count
       CPU_COUNT=\$(nproc)
       echo "Setting REFRAME_THREAD_COUNT to \${CPU_COUNT} (CPU count)"
-      echo "REFRAME_THREAD_COUNT=\${CPU_COUNT}" >> /etc/environment
+      # Create the environment file for reframe service
+      mkdir -p /opt/reframe
+      echo "REFRAME_THREAD_COUNT=\${CPU_COUNT}" > /opt/reframe/reframe.env
+      echo "Created /opt/reframe/reframe.env with REFRAME_THREAD_COUNT=\${CPU_COUNT}"
 
 runcmd:
   # Set up thread count based on CPU

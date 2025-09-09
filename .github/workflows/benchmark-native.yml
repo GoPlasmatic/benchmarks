@@ -117,14 +117,23 @@ jobs:
               continue
             fi
             
-            # Check Reframe service status
+            # Check Reframe service status with more details
             SERVICE_STATUS=$(az vm run-command invoke \
               --resource-group "${RESOURCE_GROUP}" \
               --name "${TARGET_VM_NAME}" \
               --command-id RunShellScript \
-              --scripts "systemctl is-active reframe && echo 'Service active' || echo 'Service not active'" \
+              --scripts "systemctl is-active reframe || true; systemctl status reframe --no-pager | head -20 || true" \
               --query 'value[0].message' -o tsv 2>/dev/null || echo "")
             echo "Service status: $SERVICE_STATUS"
+            
+            # Check if reframe binary exists and is executable
+            BINARY_CHECK=$(az vm run-command invoke \
+              --resource-group "${RESOURCE_GROUP}" \
+              --name "${TARGET_VM_NAME}" \
+              --command-id RunShellScript \
+              --scripts "ls -la /opt/reframe/reframe 2>&1 || echo 'Binary not found'" \
+              --query 'value[0].message' -o tsv 2>/dev/null || echo "")
+            echo "Binary check: $BINARY_CHECK"
             
             # Check health endpoint
             HEALTH_CHECK=$(az vm run-command invoke \
@@ -164,12 +173,21 @@ jobs:
           echo "Reframe failed to become healthy"
           # Get diagnostic information
           echo "Getting diagnostic information..."
+          echo "=== Reframe Service Logs ==="
           az vm run-command invoke \
             --resource-group "${RESOURCE_GROUP}" \
             --name "${TARGET_VM_NAME}" \
             --command-id RunShellScript \
-            --scripts "journalctl -u reframe -n 50 --no-pager" \
+            --scripts "journalctl -u reframe -n 100 --no-pager" \
             --query 'value[0].message' -o tsv || echo "Could not get logs"
+          
+          echo "=== Reframe Binary and Environment ==="
+          az vm run-command invoke \
+            --resource-group "${RESOURCE_GROUP}" \
+            --name "${TARGET_VM_NAME}" \
+            --command-id RunShellScript \
+            --scripts "ls -la /opt/reframe/; cat /opt/reframe/reframe.env 2>/dev/null || echo 'No env file'; nproc" \
+            --query 'value[0].message' -o tsv || echo "Could not check environment"
           
           exit 1
 
