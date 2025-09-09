@@ -8,13 +8,13 @@ on:
         required: true
         default: 'Standard_B2s'
         type: string
-      benchmark_requests:
-        description: 'Total number of requests'
+      client_total_requests:
+        description: 'Total number of requests per test (client-side)'
         required: false
         default: '10000'
         type: string
-      benchmark_configs:
-        description: 'Comma-separated concurrency levels to test'
+      client_concurrency_levels:
+        description: 'Comma-separated concurrency levels to test (client-side)'
         required: false
         default: '8,32,64,128'
         type: string
@@ -213,8 +213,8 @@ jobs:
           echo "Starting native benchmark..."
           echo "Target VM: ${TARGET_VM_NAME}"
           echo "Resource Group: ${RESOURCE_GROUP}"
-          echo "Benchmark requests: ${{ inputs.benchmark_requests }}"
-          echo "Benchmark configs: ${{ inputs.benchmark_configs }}"
+          echo "Client total requests: ${{ inputs.client_total_requests }}"
+          echo "Client concurrency levels: ${{ inputs.client_concurrency_levels }}"
           
           # First, verify the VM is accessible
           echo "Verifying VM is accessible..."
@@ -230,7 +230,7 @@ jobs:
           echo "benchmark_start=${BENCHMARK_START}" >> $GITHUB_OUTPUT
           
           # Parse configs and run each separately
-          IFS=',' read -ra CONFIGS <<< "${{ inputs.benchmark_configs }}"
+          IFS=',' read -ra CONFIGS <<< "${{ inputs.client_concurrency_levels }}"
           
           # Initialize combined results
           echo '{"results": []}' > benchmark_results.json
@@ -246,7 +246,7 @@ jobs:
               --command-id RunShellScript \
               --scripts "cd /opt/benchmark && \
                 REFRAME_URL=http://localhost:3000 \
-                BENCHMARK_REQUESTS=${{ inputs.benchmark_requests }} \
+                BENCHMARK_REQUESTS=${{ inputs.client_total_requests }} \
                 BENCHMARK_CONFIGS='${CONFIG}' \
                 BENCHMARK_WARMUP=10 \
                 python3 benchmark.py" \
@@ -298,8 +298,8 @@ jobs:
               'timestamp': datetime.utcnow().isoformat() + 'Z',
               'configuration': {
                   'target_url': 'http://localhost:3000',
-                  'total_requests': ${{ inputs.benchmark_requests }},
-                  'concurrency_levels': '${{ inputs.benchmark_configs }}'.split(',')
+                  'total_requests': ${{ inputs.client_total_requests }},
+                  'concurrency_levels': '${{ inputs.client_concurrency_levels }}'.split(',')
               },
               'results': all_results
           }
@@ -399,8 +399,8 @@ jobs:
             "configuration": {
               "target_vm_size": "${VM_SIZE}",
               "reframe_thread_count": "auto (CPU count)",
-              "benchmark_requests": ${{ inputs.benchmark_requests }},
-              "benchmark_configs": "${{ inputs.benchmark_configs }}"
+              "client_total_requests": ${{ inputs.client_total_requests }},
+              "client_concurrency_levels": "${{ inputs.client_concurrency_levels }}"
             },
             "metrics": {
               "cpu": {

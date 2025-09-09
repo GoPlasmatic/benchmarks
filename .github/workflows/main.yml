@@ -8,20 +8,20 @@ on:
         required: true
         default: 'Standard_B2s'
         type: string
-      benchmark_requests:
-        description: 'Total number of requests'
+      client_total_requests:
+        description: 'Total number of requests per test (client-side)'
         required: false
         default: '100000'
         type: string
-      benchmark_concurrent:
-        description: 'Number of concurrent connections'
+      client_concurrent_connections:
+        description: 'Number of concurrent connections (client-side)'
         required: false
         default: '128'
         type: string
-      benchmark_configs:
-        description: 'Comma-separated concurrency levels to test'
+      client_concurrency_levels:
+        description: 'Comma-separated concurrency levels to test (client-side)'
         required: false
-        default: '8,32,128,256'
+        default: '8,12,16'
         type: string
       reframe_version:
         description: 'Reframe Docker image tag'
@@ -129,15 +129,15 @@ jobs:
           RESOURCE_GROUP="${{ needs.provision.outputs.resource_group }}"
           
           echo "Starting benchmark on target VM using docker-compose..."
-          echo "Benchmark requests: ${{ inputs.benchmark_requests }}"
-          echo "Benchmark configs: ${{ inputs.benchmark_configs }}"
+          echo "Client total requests: ${{ inputs.client_total_requests }}"
+          echo "Client concurrency levels: ${{ inputs.client_concurrency_levels }}"
           
           # Record start time for metrics collection
           BENCHMARK_START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           echo "benchmark_start=${BENCHMARK_START}" >> $GITHUB_OUTPUT
           
           # Parse configs and run each separately
-          IFS=',' read -ra CONFIGS <<< "${{ inputs.benchmark_configs }}"
+          IFS=',' read -ra CONFIGS <<< "${{ inputs.client_concurrency_levels }}"
           
           # Initialize combined results
           echo '{"results": []}' > benchmark_results.json
@@ -152,7 +152,7 @@ jobs:
               --name "${TARGET_VM_NAME}" \
               --command-id RunShellScript \
               --scripts "cd /opt/reframe && \
-                BENCHMARK_REQUESTS=${{ inputs.benchmark_requests }} \
+                BENCHMARK_REQUESTS=${{ inputs.client_total_requests }} \
                 BENCHMARK_CONFIGS='${CONFIG}' \
                 docker-compose --profile benchmark run --rm benchmark-runner" \
               --query 'value[0].message' -o tsv > "benchmark_${CONFIG}.txt" || {
@@ -202,8 +202,8 @@ jobs:
               'timestamp': datetime.utcnow().isoformat() + 'Z',
               'configuration': {
                   'target_url': 'http://localhost:3000',
-                  'total_requests': ${{ inputs.benchmark_requests }},
-                  'concurrency_levels': '${{ inputs.benchmark_configs }}'.split(',')
+                  'total_requests': ${{ inputs.client_total_requests }},
+                  'concurrency_levels': '${{ inputs.client_concurrency_levels }}'.split(',')
               },
               'results': all_results
           }
@@ -298,8 +298,8 @@ jobs:
               "benchmark_vm_size": "${{ env.BENCHMARK_VM_SIZE }}",
               "reframe_version": "${{ inputs.reframe_version }}",
               "reframe_thread_count": "auto (CPU count)",
-              "benchmark_requests": ${{ inputs.benchmark_requests }},
-              "benchmark_configs": "${{ inputs.benchmark_configs }}"
+              "client_total_requests": ${{ inputs.client_total_requests }},
+              "client_concurrency_levels": "${{ inputs.client_concurrency_levels }}"
             },
             "metrics": {
               "cpu": {

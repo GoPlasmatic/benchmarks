@@ -125,8 +125,8 @@ gh workflow run main.yml -f target_vm_size=Standard_B4ms
 # Custom benchmark configuration
 gh workflow run main.yml \
   -f target_vm_size=Standard_B8ms \
-  -f benchmark_requests=200000 \
-  -f benchmark_configs="16,64,128,256,512"
+  -f client_total_requests=200000 \
+  -f client_concurrency_levels="16,64,128,256,512"
 ```
 
 #### Native VM Deployment (Recommended for Performance Testing)
@@ -137,8 +137,8 @@ gh workflow run benchmark-native.yml -f target_vm_size=Standard_B4ms
 # Custom native benchmark configuration
 gh workflow run benchmark-native.yml \
   -f target_vm_size=Standard_B16ms \
-  -f benchmark_requests=500000 \
-  -f benchmark_configs="64,256,512,1024"
+  -f client_total_requests=500000 \
+  -f client_concurrency_levels="64,256,512,1024"
 
 # Test different VM sizes
 gh workflow run benchmark-native.yml -f target_vm_size=Standard_D4s_v5
