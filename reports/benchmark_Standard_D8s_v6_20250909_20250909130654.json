@@ -1,0 +1,93 @@
+{
+  "run_id": "20250909130654",
+  "timestamp": "2025-09-09T13:13:55Z",
+  "configuration": {
+    "target_vm_size": "Standard_D8s_v6",
+    "benchmark_vm_size": "Standard_B2s",
+    "reframe_version": "latest",
+    "reframe_thread_count": "auto (CPU count)",
+    "client_total_requests": 100000,
+    "client_concurrency_levels": "8,12,16"
+  },
+  "metrics": {
+    "cpu": {
+      "average": 17.231666666666666,
+      "peak": 50.71
+    }
+  },
+  "benchmark_results": {
+  "timestamp": "2025-09-09T13:13:23.976908Z",
+  "configuration": {
+    "target_url": "http://localhost:3000",
+    "total_requests": 100000,
+    "concurrency_levels": [
+      "8",
+      "12",
+      "16"
+    ]
+  },
+  "results": [
+    {
+      "configuration": "12 concurrent",
+      "total_requests": 100000,
+      "successful_requests": 100000,
+      "success_rate": 100.0,
+      "total_time": 43.08021908899997,
+      "throughput": 2321.250961918479,
+      "latency": {
+        "min": 1.8233719999898312,
+        "avg": 3.620526800469972,
+        "p50": 3.4051109999779783,
+        "p95": 4.794161999996049,
+        "p99": 5.213858999979948,
+        "p99.9": 6.133261000002221,
+        "max": 8.145171000023765
+      }
+    },
+    {
+      "configuration": "8 concurrent",
+      "total_requests": 100000,
+      "successful_requests": 100000,
+      "success_rate": 100.0,
+      "total_time": 43.087682052999995,
+      "throughput": 2320.8489116911655,
+      "latency": {
+        "min": 1.6318179999927906,
+        "avg": 2.6735733362999197,
+        "p50": 2.6439450000168563,
+        "p95": 3.4422710000114876,
+        "p99": 3.851612000005389,
+        "p99.9": 4.113552000006848,
+        "max": 5.413676999992845
+      }
+    },
+    {
+      "configuration": "16 concurrent",
+      "total_requests": 100000,
+      "successful_requests": 100000,
+      "success_rate": 100.0,
+      "total_time": 40.92484989600001,
+      "throughput": 2443.503158939478,
+      "latency": {
+        "min": 2.0324849999724393,
+        "avg": 5.033578504590004,
+        "p50": 5.032639999967614,
+        "p95": 5.908461999979409,
+        "p99": 7.565577999969264,
+        "p99.9": 14.179752000018198,
+        "max": 16.63162699998111
+      }
+    }
+  ],
+  "summary": {
+    "best_throughput": {
+      "configuration": "16 concurrent",
+      "value": 2443.503158939478
+    },
+    "best_p99_latency": {
+      "configuration": "8 concurrent",
+      "value": 3.851612000005389
+    }
+  }
+}
+}
