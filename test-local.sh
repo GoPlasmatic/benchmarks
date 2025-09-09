@@ -28,7 +28,8 @@ echo ""
 echo "Checking scripts..."
 scripts=(
     "scripts/provision-vms.sh"
-    "scripts/run-benchmark.py"
+    "scripts/provision-native-vm.sh"
+    "scripts/benchmark.py"
 )
 
 for script in "${scripts[@]}"; do
@@ -78,7 +79,7 @@ fi
 # Test Python benchmark script syntax
 echo ""
 echo "Testing Python script syntax..."
-python3 -m py_compile scripts/run-benchmark.py && \
+python3 -m py_compile scripts/benchmark.py && \
     echo "✅ Python script syntax valid" || \
     echo "❌ Python script has syntax errors"
 
@@ -87,4 +88,5 @@ echo "================================="
 echo "Local tests completed!"
 echo ""
 echo "To run the benchmark pipeline:"
-echo "  gh workflow run main.yml -f target_vm_size=Standard_B2s"
+echo "  Docker-based: gh workflow run main.yml -f target_vm_size=Standard_B2s"
+echo "  Native VM: gh workflow run benchmark-native.yml -f target_vm_size=Standard_B2s"

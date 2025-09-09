@@ -1,7 +1,12 @@
 # Automated Benchmarking System
 
 ## Overview
-Automated benchmarking pipeline for Reframe application using GitHub Actions, Azure infrastructure, and containerized deployments.
+Automated benchmarking pipeline for Reframe application using GitHub Actions, Azure infrastructure, and both containerized and native VM deployments.
+
+### Key Updates
+- **Automatic Thread Count Configuration**: Reframe now automatically sets thread count equal to CPU count for optimal performance
+- **Native VM Deployment**: Direct VM deployment without Docker overhead for performance testing
+- **Dual Deployment Options**: Support for both Docker-based and native deployments
 
 ## Architecture
 
@@ -92,12 +97,17 @@ These parameters can be provided when triggering the workflow:
 - `REFRAME_THREAD_COUNT`: Thread pool size (default: 4)
 - `REFRAME_MAX_CONCURRENT_TASKS`: Max concurrent tasks (default: 16)
 
-### Docker Environment Variables (Auto-configured)
+### Environment Variables
+#### Docker Deployment (Auto-configured)
 These are set based on docker-compose.yml configuration:
 - `RUST_LOG`: Logging level (set to: `error`)
-- `REFRAME_THREAD_COUNT`: Thread pool size (configurable via workflow input)
-- `REFRAME_MAX_CONCURRENT_TASKS`: Max concurrent tasks (configurable via workflow input)
+- `REFRAME_THREAD_COUNT`: Automatically set to CPU count (optimal performance)
 - `REFRAME_URL`: Target URL for benchmark runner (auto-set to private IP)
+
+#### Native VM Deployment
+- `RUST_LOG`: Logging level (set to: `error`)
+- `REFRAME_THREAD_COUNT`: Automatically detected from CPU count via `nproc`
+- Thread count is set in `/etc/environment` during VM initialization
 
 ### VM Specifications
 - **Benchmark Runner**: Standard_B2ls_v2 (2 vCPUs, 4GB RAM) - Fixed
@@ -106,6 +116,8 @@ These are set based on docker-compose.yml configuration:
 ## Usage
 
 ### Manual Trigger
+
+#### Docker-based Deployment
 ```bash
 # Basic benchmark run
 gh workflow run main.yml -f target_vm_size=Standard_B4ms
@@ -114,16 +126,24 @@ gh workflow run main.yml -f target_vm_size=Standard_B4ms
 gh workflow run main.yml \
   -f target_vm_size=Standard_B8ms \
   -f benchmark_requests=200000 \
-  -f benchmark_concurrent=256 \
   -f benchmark_configs="16,64,128,256,512"
+```
 
-# Optimized Reframe performance settings
-gh workflow run main.yml \
-  -f target_vm_size=Standard_B4ms \
-  -f reframe_thread_count=8 \
-  -f reframe_max_concurrent_tasks=32 \
-  -f benchmark_requests=100000 \
-  -f benchmark_concurrent=128
+#### Native VM Deployment (Recommended for Performance Testing)
+```bash
+# Basic native benchmark run (thread count auto-detected from CPU)
+gh workflow run benchmark-native.yml -f target_vm_size=Standard_B4ms
+
+# Custom native benchmark configuration
+gh workflow run benchmark-native.yml \
+  -f target_vm_size=Standard_B16ms \
+  -f benchmark_requests=500000 \
+  -f benchmark_configs="64,256,512,1024"
+
+# Test different VM sizes
+gh workflow run benchmark-native.yml -f target_vm_size=Standard_D4s_v5
+gh workflow run benchmark-native.yml -f target_vm_size=Standard_D8s_v5
+gh workflow run benchmark-native.yml -f target_vm_size=Standard_D16s_v5
 ```
 
 ### Automated Trigger

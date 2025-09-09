@@ -11,22 +11,12 @@ on:
       benchmark_requests:
         description: 'Total number of requests'
         required: false
-        default: '100000'
+        default: '10000'
         type: string
       benchmark_configs:
         description: 'Comma-separated concurrency levels to test'
         required: false
-        default: '64,256,512,1024'
-        type: string
-      reframe_thread_count:
-        description: 'Reframe thread pool size'
-        required: false
-        default: '0'  # 0 means use all available cores
-        type: string
-      reframe_max_concurrent_tasks:
-        description: 'Reframe max concurrent tasks'
-        required: false
-        default: '0'  # 0 means unlimited
+        default: '8,32,64,128'
         type: string
       use_prebuilt:
         description: 'Use pre-built Reframe binary from ACR'
@@ -78,32 +68,7 @@ jobs:
       - name: Provision Native VM
         id: provision
         run: |
-          # Determine thread count based on VM size
-          VM_SIZE="${{ inputs.target_vm_size }}"
-          case $VM_SIZE in
-            *B2*) THREADS=2 ;;
-            *B4*) THREADS=4 ;;
-            *B8*) THREADS=8 ;;
-            *B16*) THREADS=16 ;;
-            *B20*) THREADS=20 ;;
-            *D2*) THREADS=2 ;;
-            *D4*) THREADS=4 ;;
-            *D8*) THREADS=8 ;;
-            *D16*) THREADS=16 ;;
-            *D32*) THREADS=32 ;;
-            *D48*) THREADS=48 ;;
-            *D64*) THREADS=64 ;;
-            *) THREADS=0 ;;  # Use all available
-          esac
-          
-          # Override if user specified
-          if [ "${{ inputs.reframe_thread_count }}" != "0" ]; then
-            THREADS="${{ inputs.reframe_thread_count }}"
-          fi
-          
-          export REFRAME_THREAD_COUNT=$THREADS
-          export REFRAME_MAX_CONCURRENT_TASKS="${{ inputs.reframe_max_concurrent_tasks }}"
-          
+          # Thread count will be automatically set to CPU count on the VM
           chmod +x ./scripts/provision-native-vm.sh
           ./scripts/provision-native-vm.sh \
             "${{ steps.generate_id.outputs.resource_group }}" \
@@ -129,37 +94,83 @@ jobs:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
       
       - name: Wait for Reframe to be Ready
+        timeout-minutes: 15
         run: |
           TARGET_VM_NAME="reframe-target-${{ needs.provision.outputs.run_id }}"
           RESOURCE_GROUP="${{ needs.provision.outputs.resource_group }}"
           echo "Waiting for native Reframe to be healthy on ${TARGET_VM_NAME}..."
           
           for i in {1..90}; do
+            echo "Health check attempt $i/90..."
+            
+            # First check if we can run commands on the VM
+            VM_STATUS=$(az vm run-command invoke \
+              --resource-group "${RESOURCE_GROUP}" \
+              --name "${TARGET_VM_NAME}" \
+              --command-id RunShellScript \
+              --scripts "echo 'VM accessible'" \
+              --query 'value[0].message' -o tsv 2>&1 || echo "VM not accessible")
+            
+            if [[ "$VM_STATUS" != *"VM accessible"* ]]; then
+              echo "VM not yet accessible: $VM_STATUS"
+              sleep 10
+              continue
+            fi
+            
+            # Check Reframe service status
+            SERVICE_STATUS=$(az vm run-command invoke \
+              --resource-group "${RESOURCE_GROUP}" \
+              --name "${TARGET_VM_NAME}" \
+              --command-id RunShellScript \
+              --scripts "systemctl is-active reframe && echo 'Service active' || echo 'Service not active'" \
+              --query 'value[0].message' -o tsv 2>/dev/null || echo "")
+            echo "Service status: $SERVICE_STATUS"
+            
+            # Check health endpoint
             HEALTH_CHECK=$(az vm run-command invoke \
               --resource-group "${RESOURCE_GROUP}" \
               --name "${TARGET_VM_NAME}" \
               --command-id RunShellScript \
-              --scripts "curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/health" \
+              --scripts "curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/health || echo 'Curl failed'" \
               --query 'value[0].message' -o tsv 2>/dev/null || echo "")
             
             if [[ "$HEALTH_CHECK" == *"200"* ]]; then
               echo "Native Reframe is healthy!"
               
               # Get configuration info
+              echo "Getting Reframe configuration..."
               az vm run-command invoke \
                 --resource-group "${RESOURCE_GROUP}" \
                 --name "${TARGET_VM_NAME}" \
                 --command-id RunShellScript \
-                --scripts "curl -s http://localhost:3000/health | jq ." \
+                --scripts "curl -s http://localhost:3000/health | jq . || echo 'No health data'" \
+                --query 'value[0].message' -o tsv
+              
+              # Show thread configuration
+              echo "Thread configuration:"
+              az vm run-command invoke \
+                --resource-group "${RESOURCE_GROUP}" \
+                --name "${TARGET_VM_NAME}" \
+                --command-id RunShellScript \
+                --scripts "cat /etc/environment | grep REFRAME || echo 'No REFRAME vars'; nproc" \
                 --query 'value[0].message' -o tsv
               
               exit 0
             fi
-            echo "Attempt $i/90: Reframe not ready yet..."
+            echo "Health check response: $HEALTH_CHECK"
             sleep 10
           done
           
           echo "Reframe failed to become healthy"
+          # Get diagnostic information
+          echo "Getting diagnostic information..."
+          az vm run-command invoke \
+            --resource-group "${RESOURCE_GROUP}" \
+            --name "${TARGET_VM_NAME}" \
+            --command-id RunShellScript \
+            --scripts "journalctl -u reframe -n 50 --no-pager" \
+            --query 'value[0].message' -o tsv || echo "Could not get logs"
+          
           exit 1
 
   benchmark:
@@ -176,38 +187,130 @@ jobs:
       
       - name: Execute Native Benchmark
         id: benchmark
+        timeout-minutes: 30
         run: |
           TARGET_VM_NAME="reframe-target-${{ needs.provision.outputs.run_id }}"
           RESOURCE_GROUP="${{ needs.provision.outputs.resource_group }}"
           
           echo "Starting native benchmark..."
+          echo "Target VM: ${TARGET_VM_NAME}"
+          echo "Resource Group: ${RESOURCE_GROUP}"
+          echo "Benchmark requests: ${{ inputs.benchmark_requests }}"
+          echo "Benchmark configs: ${{ inputs.benchmark_configs }}"
+          
+          # First, verify the VM is accessible
+          echo "Verifying VM is accessible..."
+          az vm run-command invoke \
+            --resource-group "${RESOURCE_GROUP}" \
+            --name "${TARGET_VM_NAME}" \
+            --command-id RunShellScript \
+            --scripts "echo 'VM is accessible' && ls -la /opt/benchmark/" \
+            --query 'value[0].message' -o tsv
           
           # Record start time for metrics collection
           BENCHMARK_START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           echo "benchmark_start=${BENCHMARK_START}" >> $GITHUB_OUTPUT
           
-          # Run benchmark directly with Python
-          az vm run-command invoke \
-            --resource-group "${RESOURCE_GROUP}" \
-            --name "${TARGET_VM_NAME}" \
-            --command-id RunShellScript \
-            --scripts "cd /opt/benchmark && \
-              REFRAME_URL=http://localhost:3000 \
-              BENCHMARK_REQUESTS=${{ inputs.benchmark_requests }} \
-              BENCHMARK_CONFIGS='${{ inputs.benchmark_configs }}' \
-              python3 benchmark.py" \
-            --query 'value[0].message' -o tsv > benchmark_raw_output.txt
+          # Parse configs and run each separately
+          IFS=',' read -ra CONFIGS <<< "${{ inputs.benchmark_configs }}"
+          
+          # Initialize combined results
+          echo '{"results": []}' > benchmark_results.json
+          
+          for CONFIG in "${CONFIGS[@]}"; do
+            CONFIG=$(echo $CONFIG | xargs) # Trim whitespace
+            echo "Running benchmark with concurrency: ${CONFIG}"
+            
+            # Run single config benchmark (shorter timeout per config)
+            timeout 300 az vm run-command invoke \
+              --resource-group "${RESOURCE_GROUP}" \
+              --name "${TARGET_VM_NAME}" \
+              --command-id RunShellScript \
+              --scripts "cd /opt/benchmark && \
+                REFRAME_URL=http://localhost:3000 \
+                BENCHMARK_REQUESTS=${{ inputs.benchmark_requests }} \
+                BENCHMARK_CONFIGS='${CONFIG}' \
+                BENCHMARK_WARMUP=10 \
+                python3 benchmark.py" \
+              --query 'value[0].message' -o tsv > "benchmark_${CONFIG}.txt" || {
+                echo "Warning: Benchmark for config ${CONFIG} failed or timed out"
+                continue
+              }
+            
+            # Extract JSON for this config
+            sed -n '/JSON_OUTPUT_START/,/JSON_OUTPUT_END/p' "benchmark_${CONFIG}.txt" | sed '1d;$d' > "benchmark_${CONFIG}.json"
+            
+            # Show progress
+            if [ -s "benchmark_${CONFIG}.json" ]; then
+              echo "Config ${CONFIG} completed successfully"
+              # Extract key metrics for quick view
+              jq -r '.results[0] | "  Throughput: \(.throughput) req/s, P99 Latency: \(.latency.p99) ms"' "benchmark_${CONFIG}.json" || true
+            else
+              echo "Config ${CONFIG} - no valid results"
+            fi
+          done
           
           # Record end time for metrics collection
           BENCHMARK_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           echo "benchmark_end=${BENCHMARK_END}" >> $GITHUB_OUTPUT
           
-          # Extract JSON output
-          sed -n '/JSON_OUTPUT_START/,/JSON_OUTPUT_END/p' benchmark_raw_output.txt | sed '1d;$d' > benchmark_results.json
+          # Combine all results into single JSON
+          echo "Combining benchmark results..."
+          python3 - << 'EOF'
+          import json
+          import glob
+          import os
+          from datetime import datetime
+          
+          all_results = []
+          config_files = glob.glob("benchmark_*.json")
+          
+          for file in config_files:
+              if os.path.getsize(file) > 0:
+                  try:
+                      with open(file, 'r') as f:
+                          data = json.load(f)
+                          if 'results' in data and data['results']:
+                              all_results.extend(data['results'])
+                  except:
+                      print(f"Warning: Could not parse {file}")
+          
+          # Create combined output
+          output = {
+              'timestamp': datetime.utcnow().isoformat() + 'Z',
+              'configuration': {
+                  'target_url': 'http://localhost:3000',
+                  'total_requests': ${{ inputs.benchmark_requests }},
+                  'concurrency_levels': '${{ inputs.benchmark_configs }}'.split(',')
+              },
+              'results': all_results
+          }
+          
+          # Add summary if we have results
+          if all_results:
+              best_throughput = max(all_results, key=lambda x: x.get('throughput', 0))
+              best_latency = min(all_results, key=lambda x: x.get('latency', {}).get('p99', float('inf')))
+              
+              output['summary'] = {
+                  'best_throughput': {
+                      'configuration': best_throughput.get('configuration'),
+                      'value': best_throughput.get('throughput')
+                  },
+                  'best_p99_latency': {
+                      'configuration': best_latency.get('configuration'),
+                      'value': best_latency.get('latency', {}).get('p99')
+                  }
+              }
+          
+          with open('benchmark_results.json', 'w') as f:
+              json.dump(output, f, indent=2)
+          
+          print(f"Combined {len(all_results)} benchmark results")
+          EOF
           
           # Display summary
-          echo "Benchmark completed. Raw output:"
-          cat benchmark_raw_output.txt
+          echo "Benchmark completed. Summary:"
+          jq '.summary' benchmark_results.json || echo "No summary available"
       
       - name: Collect System Metrics
         id: metrics
@@ -277,8 +380,7 @@ jobs:
             "deployment": "native",
             "configuration": {
               "target_vm_size": "${VM_SIZE}",
-              "reframe_thread_count": ${{ inputs.reframe_thread_count }},
-              "reframe_max_concurrent_tasks": ${{ inputs.reframe_max_concurrent_tasks }},
+              "reframe_thread_count": "auto (CPU count)",
               "benchmark_requests": ${{ inputs.benchmark_requests }},
               "benchmark_configs": "${{ inputs.benchmark_configs }}"
             },

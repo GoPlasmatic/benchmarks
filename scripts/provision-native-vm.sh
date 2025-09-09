@@ -13,8 +13,8 @@ ACR_URL=${ACR_URL}
 ACR_USERNAME=${ACR_USERNAME}
 ACR_PASSWORD=${ACR_PASSWORD}
 REFRAME_VERSION=${REFRAME_VERSION:-latest}
-REFRAME_THREAD_COUNT=${REFRAME_THREAD_COUNT:-4}
-REFRAME_MAX_CONCURRENT_TASKS=${REFRAME_MAX_CONCURRENT_TASKS:-16}
+# Thread count will be set to CPU count on the VM
+REFRAME_THREAD_COUNT=${REFRAME_THREAD_COUNT:-0}
 
 echo "Creating resource group: ${RESOURCE_GROUP}"
 az group create --name "${RESOURCE_GROUP}" --location "${LOCATION}" || true
@@ -66,8 +66,9 @@ $(cat ./scripts/benchmark.py | sed 's/^/      /')
       User=reframe
       WorkingDirectory=/opt/reframe
       Environment="RUST_LOG=error"
-      Environment="REFRAME_THREAD_COUNT=${REFRAME_THREAD_COUNT}"
-      Environment="REFRAME_MAX_CONCURRENT_TASKS=${REFRAME_MAX_CONCURRENT_TASKS}"
+      # Thread count will be set dynamically based on CPU count
+      ExecStartPre=/bin/bash -c 'echo "REFRAME_THREAD_COUNT=\$(nproc)" >> /etc/environment'
+      EnvironmentFile=/etc/environment
       ExecStart=/opt/reframe/reframe
       Restart=always
       RestartSec=10
@@ -78,8 +79,20 @@ $(cat ./scripts/benchmark.py | sed 's/^/      /')
       
       [Install]
       WantedBy=multi-user.target
+  
+  - path: /opt/setup-reframe-threads.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Set REFRAME_THREAD_COUNT to CPU count
+      CPU_COUNT=\$(nproc)
+      echo "Setting REFRAME_THREAD_COUNT to \${CPU_COUNT} (CPU count)"
+      echo "REFRAME_THREAD_COUNT=\${CPU_COUNT}" >> /etc/environment
 
 runcmd:
+  # Set up thread count based on CPU
+  - /opt/setup-reframe-threads.sh
+  
   # Create reframe user
   - useradd -m -s /bin/bash reframe || true
   
